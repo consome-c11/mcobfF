@@ -144,6 +144,9 @@ namespace mcobfF
         WinHttpSetOption(request, WINHTTP_OPTION_RECEIVE_TIMEOUT, &receiveTimeout, sizeof(receiveTimeout));
         WinHttpSetOption(request, WINHTTP_OPTION_CONNECT_TIMEOUT, &connectTimeout, sizeof(connectTimeout));
 
+        LPCWSTR userAgent = L"MC-OBF-Find/1.0 (Windows NT 10.0; Win64; x64)";
+        WinHttpAddRequestHeaders(request, userAgent, -1, WINHTTP_ADDREQ_FLAG_ADD);
+
         if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
         {
             Logger::error("HttpsClient") << "WinHttpSendRequest failed: " << getErrorMessage(GetLastError());

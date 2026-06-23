@@ -70,13 +70,13 @@ namespace mcobfF
 
         static LogStream warn(const std::string& tag)
         {
-            return LogStream(std::cerr, currentLevel <= LogLevel::Warn,
+            return LogStream(std::cout, currentLevel <= LogLevel::Warn,
                              "[" + tag + "] [WARN] ");
         }
 
         static LogStream error(const std::string& tag)
         {
-            return LogStream(std::cerr, currentLevel <= LogLevel::Error,
+            return LogStream(std::cout, currentLevel <= LogLevel::Error,
                              "[" + tag + "] [ERROR] ");
         }
     };

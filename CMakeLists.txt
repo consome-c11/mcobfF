@@ -21,9 +21,29 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(miniz)
 
+# dear imgui
+FetchContent_Declare(
+        imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG v1.91.0
+)
+FetchContent_MakeAvailable(imgui)
+
+set(IMGUI_SOURCES
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_demo.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
+)
+
 file(GLOB_RECURSE SOURCES "src/*.cpp")
-add_executable(${PROJECT_NAME} ${SOURCES}
+add_executable(${PROJECT_NAME} ${SOURCES} ${IMGUI_SOURCES}
         main.cpp
+        gui/AppState.h
+        gui/AppState.cpp
         mcobfF/class/ClassFileParser.h
         mcobfF/class/ClassFileParser.cpp
         mcobfF/class/ClassHierarchyBuilder.h
@@ -58,9 +78,10 @@ add_executable(${PROJECT_NAME} ${SOURCES}
 
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /W4)
+    set_target_properties(${PROJECT_NAME} PROPERTIES LINK_FLAGS "/SUBSYSTEM:WINDOWS")
 else()
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-target_include_directories(${PROJECT_NAME} PRIVATE "/" mcobfF mcobfF/api mcobfF/dumper ${miniz_SOURCE_DIR})
-target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json miniz winhttp)
+target_include_directories(${PROJECT_NAME} PRIVATE "/" mcobfF mcobfF/api mcobfF/dumper gui ${miniz_SOURCE_DIR} ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json miniz winhttp d3d11 d3dcompiler dwmapi)

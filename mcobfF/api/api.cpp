@@ -27,7 +27,13 @@ namespace mcobfF
         JarDumper::setCacheDir(cacheDir_);
     }
 
-    api::~api() = default;
+    api::~api()
+    {
+        if (srgFuture_.valid())
+        {
+            srgFuture_.wait();
+        }
+    }
 
     std::optional<std::string> api::getLatestReleaseVersion()
     {
@@ -53,10 +59,16 @@ namespace mcobfF
             return false;
         }
 
-        std::string srgCacheDir = resolver_->getCachePath(version);
-        if (!SRGResolver::downloadAndLoad(version, srgCacheDir, resolver_->getData()))
+        if (srgFuture_.valid())
         {
-            Logger::info("CoreApi") << "No SRG mappings for version: " << version;
+            srgFuture_.wait();
+        }
+
+        {
+            std::string srgCacheDir = resolver_->getCachePath(version);
+            srgFuture_ = std::async(std::launch::async, [this, version, srgCacheDir]() {
+                return SRGResolver::downloadAndLoad(version, srgCacheDir, resolver_->getData());
+            });
         }
 
         currentVersion_ = version;
@@ -67,6 +79,7 @@ namespace mcobfF
     {
         if (!loadMappings(version)) return false;
 
+        // Build class hierarchy from JAR (in parallel with SRG loading)
         ZipArchive zip;
         if (!zip.open(jarPath))
         {
@@ -75,6 +88,16 @@ namespace mcobfF
         }
 
         const ClassHierarchy hierarchy = ClassHierarchyBuilder::buildFromJar(zip);
+
+        // Wait for SRG loading to complete before running inheritance resolution
+        if (srgFuture_.valid())
+        {
+            if (!srgFuture_.get())
+            {
+                Logger::info("CoreApi") << "No SRG mappings for version: " << version;
+            }
+        }
+
         InheritanceResolver ihResolver(resolver_->getData(), hierarchy);
         ihResolver.resolveAll();
 

@@ -104,7 +104,7 @@ namespace mcobfF
 
             for (auto& entry = mappings.entries[classIt->second]; auto& method : entry.methods)
             {
-                if (method.obfName == obf)
+                if (method.obfName == obf && method.jvmDescriptor == remappedDesc)
                 {
                     method.intermediaryName = inter;
                     break;

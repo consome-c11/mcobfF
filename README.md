@@ -1,20 +1,22 @@
 # MC-OBF-Find (mcobfF)
 
-A C++20 CLI tool and library for Minecraft obfuscation mapping resolution. Provides mapping dump from Mojang mappings, SRG mappings, and Fabric Intermediary, with support for class/method/field name resolution and class hierarchy analysis from JAR files.
+A C++20 GUI application and library for browsing Minecraft obfuscation mappings. Provides interactive exploration of Mojang mappings, SRG, and Fabric Intermediary with class hierarchy analysis from JAR files.
 
 ## Features
 
-- **Mapping Dump**: Export class/method/field mappings from a Minecraft JAR or directly by version
-- **Multiple Mapping Formats**: Supports Mojang mappings (TSRG), SRG, and Fabric Intermediary (Tiny v2)
-- **Inheritance Resolution**: Enhanced mapping resolution using class hierarchy analysis from JAR files
-- **Version Management**: Download and cache mappings for specific Minecraft versions
-- **JAR Analysis**: Load and analyze JAR files to build class hierarchies
-- **CLI & Library**: Usable as a standalone command-line tool or integrated as a library
+- **Interactive GUI**: Browse mappings in a tree view with live search/filter
+- **Multiple Mapping Formats**: Mojang mappings (TSRG), SRG, and Fabric Intermediary (Tiny)
+- **Auto-Download**: Fetches version manifest, client JARs, and mappings on demand
+- **Inheritance Resolution**: Enhanced mapping resolution via class hierarchy analysis
+- **Mapping Detail Panel**: View deobfuscated, obfuscated, intermediary, and SRG names side by side
+- **Cache Management**: Caches downloaded JARs and mappings locally
+- **Library API**: Also usable as a standalone library for programmatic access
 
 ## Building
 
 ### Requirements
-- C++20 compatible compiler (MSVC, GCC, Clang)
+- Windows (Win32 API, DirectX 11)
+- C++20 compatible compiler (MSVC)
 - CMake 3.20+
 
 ### Build Steps
@@ -28,25 +30,16 @@ cmake --build . --config Release
 Dependencies (auto-fetched via CMake FetchContent):
 - [nlohmann/json](https://github.com/nlohmann/json) v3.12.0
 - [miniz](https://github.com/richgel999/miniz) v3.1.1
+- [dear imgui](https://github.com/ocornut/imgui) v1.91.0
 
-## CLI Usage
+## Usage
 
-```bash
-# Dump mappings from a local JAR
-mcobfF client.jar 1.21.1 mappings.json
+Launch the executable to open the GUI window:
 
-# Dump mappings by version (auto-downloads JAR)
-mcobfF --version 1.21.1 mappings.json
-mcobfF -v 1.21.1 mappings.json
-
-# Dump mappings for the latest release
-mcobfF --latest-release mappings.json
-mcobfF -r mappings.json
-
-# Dump mappings for the latest snapshot
-mcobfF --latest-snapshot mappings.json
-mcobfF -s mappings.json
-```
+1. **Select Version**: Click `File > Select Version...` to fetch the version manifest, then choose a release or snapshot
+2. **Browse Tree**: The left panel shows a hierarchical class tree; expand classes to see methods and fields
+3. **Search**: Type in the filter box to search (use `|` to separate class and member filters, e.g. `block|getState`)
+4. **Details**: Click a class/method/field to view all mapping names in the right panel
 
 ## Library Usage
 
@@ -64,7 +57,7 @@ int main() {
     // Resolve class name (deobfuscated -> obfuscated)
     auto obfClass = api.resolveClass("net.minecraft.world.level.block.Block", true);
     if (obfClass) {
-        std::cout << "Block -> " << *obfClass << std::endl;
+        // ...
     }
     
     // Resolve method (deobfuscated -> obfuscated)
@@ -85,11 +78,10 @@ int main() {
 ### With Inheritance Resolution
 
 ```cpp
-// Load mappings and enhance with inheritance analysis from a JAR
 api.loadMappingsWithInheritance("1.21.1", "path/to/client.jar");
 ```
 
-### Dumping Mappings (Library)
+### Dumping Mappings
 
 ```cpp
 // Dump mappings for a version to JSON
@@ -102,17 +94,13 @@ mcobfF::api::dumpJarMappings("client.jar", "1.21.1", "jar_mappings.json");
 ### Version Discovery
 
 ```cpp
-// Get latest release version
 auto release = mcobfF::api::getLatestReleaseVersion();
-
-// Get latest snapshot version
 auto snapshot = mcobfF::api::getLatestSnapshotVersion();
 ```
 
 ## API Reference
 
 ### `mcobfF::api`
-Main entry point class.
 
 | Method | Description |
 |--------|-------------|
@@ -136,6 +124,10 @@ Main entry point class.
 ## Project Structure
 
 ```
+main.cpp             # WinMain entry, ImGui + DX11 setup
+gui/
+├── AppState.h/cpp   # GUI state, tree building, rendering logic
+
 mcobfF/
 ├── api/              # Public API (api.h/cpp)
 ├── class/            # Class file parsing & hierarchy

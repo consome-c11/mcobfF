@@ -11,9 +11,8 @@ namespace mcobfF {
 
         [[nodiscard]] static bool dumpFromVersion(const std::string& version, const std::string& outputPath);
 
-    private:
         [[nodiscard]] static std::string getDefaultCacheDir();
-
+    private:
         static std::string cacheDir_;
     };
 }

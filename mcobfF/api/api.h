@@ -4,6 +4,7 @@
 #include <vector>
 #include <optional>
 #include <memory>
+#include <future>
 #include "mcobfF/class/ClassInfo.h"
 #include "mcobfF/mapping/MappingData.h"
 
@@ -56,5 +57,6 @@ namespace mcobfF
         ClassHierarchy hierarchy_;
         std::string cacheDir_;
         std::string currentVersion_;
+        std::future<bool> srgFuture_;
     };
 } // namespace mc
