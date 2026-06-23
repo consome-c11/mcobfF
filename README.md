@@ -1,15 +1,15 @@
 # MC-OBF-Find (mcobfF)
 
-A C++20 library for Minecraft obfuscation mapping resolution. Provides tools to load Mojang mappings and SRG mappings, resolve class/method/field names between obfuscated and deobfuscated forms, build class hierarchies from JAR files, and dump mappings.
+A C++20 CLI tool and library for Minecraft obfuscation mapping resolution. Provides mapping dump from Mojang mappings, SRG mappings, and Fabric Intermediary, with support for class/method/field name resolution and class hierarchy analysis from JAR files.
 
 ## Features
 
-- **Mapping Resolution**: Convert between obfuscated (e.g., `abc`) and deobfuscated (e.g., `Block`) names for classes, methods, and fields
-- **Multiple Mapping Formats**: Supports Mojang mappings (TSRG) and SRG mappings
+- **Mapping Dump**: Export class/method/field mappings from a Minecraft JAR or directly by version
+- **Multiple Mapping Formats**: Supports Mojang mappings (TSRG), SRG, and Fabric Intermediary (Tiny v2)
 - **Inheritance Resolution**: Enhanced mapping resolution using class hierarchy analysis from JAR files
 - **Version Management**: Download and cache mappings for specific Minecraft versions
 - **JAR Analysis**: Load and analyze JAR files to build class hierarchies
-- **Mapping Dump Mappings Dump**: Export mappings to various formats
+- **CLI & Library**: Usable as a standalone command-line tool or integrated as a library
 
 ## Building
 
@@ -25,19 +25,36 @@ cmake ..
 cmake --build . --config Release
 ```
 
-The project uses FetchContent to automatically download:
+Dependencies (auto-fetched via CMake FetchContent):
 - [nlohmann/json](https://github.com/nlohmann/json) v3.12.0
 - [miniz](https://github.com/richgel999/miniz) v3.1.1
 
-## Usage
+## CLI Usage
 
-### Basic Example
+```bash
+# Dump mappings from a local JAR
+mcobfF client.jar 1.21.1 mappings.json
+
+# Dump mappings by version (auto-downloads JAR)
+mcobfF --version 1.21.1 mappings.json
+mcobfF -v 1.21.1 mappings.json
+
+# Dump mappings for the latest release
+mcobfF --latest-release mappings.json
+mcobfF -r mappings.json
+
+# Dump mappings for the latest snapshot
+mcobfF --latest-snapshot mappings.json
+mcobfF -s mappings.json
+```
+
+## Library Usage
 
 ```cpp
-#include "mcobfF/api/mcobfF.h"
+#include "mcobfF/api/api.h"
 
 int main() {
-    mcobfF::mcobfF api("./cache");
+    mcobfF::api api("./cache");
     
     // Load mappings for a specific version
     if (!api.loadMappings("1.21.1")) {
@@ -69,29 +86,27 @@ int main() {
 
 ```cpp
 // Load mappings and enhance with inheritance analysis from a JAR
-api.loadMappingsWithInheritance("1.21.1", "path/to/minecraft_client.jar");
-
-// Now resolution includes inherited methods/fields
+api.loadMappingsWithInheritance("1.21.1", "path/to/client.jar");
 ```
 
-### Dumping Mappings
+### Dumping Mappings (Library)
 
 ```cpp
 // Dump mappings for a version to JSON
-mcobfF::mcobfF::dumpMappings("1.21.1", "mappings.json");
+mcobfF::api::dumpMappings("1.21.1", "mappings.json");
 
 // Dump mappings from a specific JAR
-mcobfF::mcobfF::dumpJarMappings("client.jar", "1.21.1", "jar_mappings.json");
+mcobfF::api::dumpJarMappings("client.jar", "1.21.1", "jar_mappings.json");
 ```
 
 ### Version Discovery
 
 ```cpp
 // Get latest release version
-auto release = mcobfF::mcobfF::getLatestReleaseVersion();
+auto release = mcobfF::api::getLatestReleaseVersion();
 
 // Get latest snapshot version
-auto snapshot = mcobfF::mcobfF::getLatestSnapshotVersion();
+auto snapshot = mcobfF::api::getLatestSnapshotVersion();
 ```
 
 ## API Reference
@@ -101,9 +116,9 @@ Main entry point class.
 
 | Method | Description |
 |--------|-------------|
-| `mcobfF()` | Create with default cache directory |
-| `mcobfF(cacheDir)` | Create with custom cache directory |
-| `loadMappings(version)` | Load Mojang + SRG mappings for version |
+| `api()` | Create with empty cache directory |
+| `api(cacheDir)` | Create with custom cache directory |
+| `loadMappings(version)` | Load Mojang + SRG + Intermediary mappings |
 | `loadMappingsWithInheritance(version, jarPath)` | Load mappings + enhance with JAR analysis |
 | `resolveClass(name, deobfToObf)` | Resolve class name |
 | `resolveMethod(class, method, params, deobfToObf)` | Resolve method name |
@@ -115,6 +130,8 @@ Main entry point class.
 | `getMappingData()` | Get raw mapping data |
 | `isMappingLoaded()` | Check if mappings are loaded |
 | `getCurrentVersion()` | Get currently loaded version |
+| `getLatestReleaseVersion()` | Static: get latest release version string |
+| `getLatestSnapshotVersion()` | Static: get latest snapshot version string |
 
 ## Project Structure
 
@@ -122,18 +139,22 @@ Main entry point class.
 mcobfF/
 ├── api/              # Public API (api.h/cpp)
 ├── class/            # Class file parsing & hierarchy
-├── dumper/           # Mapping export functionality
+│   ├── ClassFileParser     # .class file binary parser
+│   ├── ClassHierarchyBuilder # Build hierarchy from JAR
+│   └── ClassInfo           # Data structures
+├── config/           # Configuration (API URLs, user agent)
+├── dumper/           # Mapping export (JarDumper)
 ├── file/             # Filesystem utilities
 ├── mapping/          # Mapping parsers & resolvers
-│   ├── MappingParser     # Base parser
-│   ├── TinyMappingParser # Tiny v2 format
-│   ├── SRGParser         # SRG format
-│   ├── SRGResolver       # SRG resolution
-│   ├── MappingResolver   # Unified resolution
-│   ├── InheritanceResolver # Inheritance enhancement
-│   └── MappingData       # Data structures
-├── network/          # Version downloading
-├── zip/              # ZIP/JAR handling
+│   ├── MappingData        # Core data structures & queries
+│   ├── MappingParser      # Mojang mappings parser
+│   ├── TinyMappingParser  # Tiny v2 (Fabric Intermediary) parser
+│   ├── SRGParser          # SRG format parser
+│   ├── SRGResolver        # SRG download & resolution
+│   ├── MappingResolver    # Unified resolution orchestration
+│   └── InheritanceResolver # Inheritance-based enhancement
+├── network/          # HTTP client & version discovery
+├── zip/              # ZIP/JAR archive handling
 ├── Types.h           # Common type definitions
 └── Logger.h          # Logging utility
 ```
