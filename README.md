@@ -14,20 +14,8 @@ A C++20 library for Minecraft obfuscation mapping resolution. Provides tools to 
 ## Building
 
 ### Requirements
-- C++20 compatible compiler (MSVC, GCC, Clang)
+- C++20 compatible compiler (MSVC)
 - CMake 3.20+
-
-### Build Steps
-
-```bash
-mkdir build && cd build
-cmake ..
-cmake --build . --config Release
-```
-
-The project uses FetchContent to automatically download:
-- [nlohmann/json](https://github.com/nlohmann/json) v3.12.0
-- [miniz](https://github.com/richgel999/miniz) v3.1.1
 
 ## Usage
 
