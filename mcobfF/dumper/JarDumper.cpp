@@ -1,0 +1,260 @@
+#include "JarDumper.h"
+#include "mcobfF/mapping/MappingResolver.h"
+#include "mcobfF/mapping/SRGResolver.h"
+#include "mcobfF/network/VersionDownloader.h"
+#include "mcobfF/zip/ZipArchive.h"
+#include "mcobfF/class/ClassFileParser.h"
+#include "mcobfF/class/ClassHierarchyBuilder.h"
+#include "mcobfF/mapping/InheritanceResolver.h"
+#include <nlohmann/json.hpp>
+#include <iostream>
+#include <fstream>
+#include <filesystem>
+#include <unordered_set>
+
+using json = nlohmann::json;
+
+namespace mcobfF {
+    std::string JarDumper::cacheDir_ = "";
+
+    static json buildMethodJson(const MappingEntry& entry) {
+        json methods = json::array();
+        for (const auto& m : entry.methods) {
+            json methodObj = {
+                {"obf", m.obfName},
+                {"deobf", m.deobfName},
+                {"desc", m.jvmDescriptor}
+            };
+            if (m.intermediaryName) {
+                methodObj["inter"] = *m.intermediaryName;
+            }
+            if (m.srgName) {
+                methodObj["srg"] = *m.srgName;
+            }
+            methods.push_back(methodObj);
+        }
+        return methods;
+    }
+
+    static json buildFieldJson(const MappingEntry& entry) {
+        json fields = json::array();
+        for (const auto& f : entry.fields) {
+            json fieldObj = {
+                {"obf", f.obfName},
+                {"deobf", f.deobfName},
+                {"type", f.type}
+            };
+            if (f.intermediaryName) {
+                fieldObj["inter"] = *f.intermediaryName;
+            }
+            if (f.srgName) {
+                fieldObj["srg"] = *f.srgName;
+            }
+            fields.push_back(fieldObj);
+        }
+        return fields;
+    }
+
+    static json buildClassJson(
+        const std::string& obfClass,
+        const std::string& deobfClass,
+        const MappingEntry& entry)
+    {
+        json classObj;
+        classObj["obf"] = obfClass;
+        classObj["deobf"] = deobfClass;
+
+        if (entry.classInfo.intermediaryClass) {
+            classObj["inter"] = *entry.classInfo.intermediaryClass;
+        }
+        if (entry.classInfo.srgClass) {
+            classObj["srg"] = *entry.classInfo.srgClass;
+        }
+
+        classObj["methods"] = buildMethodJson(entry);
+        classObj["fields"] = buildFieldJson(entry);
+
+        return classObj;
+    }
+
+    void JarDumper::setCacheDir(const std::string& dir) {
+        cacheDir_ = dir;
+    }
+
+    bool JarDumper::dump(const std::string& jarPath, const std::string& version, const std::string& outputPath)
+    {
+        std::cout << "[JarDumper] Using version: " << version << std::endl;
+
+        std::string mappingCacheDir = getDefaultCacheDir() + "\\mappings";
+        MappingResolver resolver(mappingCacheDir);
+        if (!resolver.initialize()) {
+            std::cerr << "[JarDumper] Failed to initialize MappingResolver." << std::endl;
+            return false;
+        }
+
+        if (!resolver.loadMappings(version)) {
+            std::cerr << "[JarDumper] Failed to load mappings for version: " << version << std::endl;
+            return false;
+        }
+
+        std::cout << "[JarDumper] Loading SRG mappings..." << std::endl;
+        std::string srgCacheDir = resolver.getCachePath(version);
+        if (!SRGResolver::downloadAndLoad(version, srgCacheDir, resolver.getData())) {
+            std::cout << "[JarDumper] No SRG mappings available for version: " << version << std::endl;
+        }
+
+        const auto& mappingData = resolver.getData();
+
+        ZipArchive zip;
+        if (!zip.open(jarPath)) {
+            std::cerr << "[JarDumper] Failed to open jar file: " << jarPath << std::endl;
+            return false;
+        }
+
+        std::cout << "[JarDumper] Building class hierarchy..." << std::endl;
+        ClassHierarchy hierarchy = ClassHierarchyBuilder::buildFromJar(zip);
+        std::cout << "[JarDumper] Found " << hierarchy.size() << " classes." << std::endl;
+
+        std::cout << "[JarDumper] Resolving inheritance chains..." << std::endl;
+        {
+            InheritanceResolver ihResolver(resolver.getData(), hierarchy);
+            ihResolver.resolveAll();
+        }
+
+        mz_uint numFiles = zip.getFileCount();
+        std::cout << "[JarDumper] Scanning " << numFiles << " files..." << std::endl;
+
+        json outputJson;
+        outputJson["version"] = version;
+        outputJson["classes"] = json::array();
+
+        int dumpedCount = 0;
+        for (mz_uint i = 0; i < numFiles; i++) {
+            mz_zip_archive_file_stat stat{};
+            if (!zip.getFileStat(i, stat)) continue;
+
+            std::string filename = stat.m_filename;
+            if (!filename.ends_with(".class")) continue;
+
+            std::string obfClass = filename.substr(0, filename.length() - 6);
+            auto deobfClassOpt = resolver.resolveToDeobfuscated(obfClass);
+            if (!deobfClassOpt) continue;
+
+            auto it = mappingData.obfClassIndex.find(obfClass);
+            if (it == mappingData.obfClassIndex.end()) continue;
+
+            const auto& entry = mappingData.entries[it->second];
+            json classObj = buildClassJson(obfClass, *deobfClassOpt, entry);
+
+            auto dataOpt = zip.extractToMemory(i);
+            if (dataOpt) {
+                ClassInfo info;
+                if (ClassFileParser::parse(
+                        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(dataOpt->data()), dataOpt->size()),
+                        info))
+                {
+                    if (!info.superName.empty()) {
+                        classObj["superName"] = info.superName;
+                        auto deobfSuper = resolver.resolveToDeobfuscated(info.superName);
+                        if (deobfSuper) {
+                            classObj["superClass"] = *deobfSuper;
+                        }
+                    }
+
+                    json ifaceObf = json::array();
+                    json ifaceDeobf = json::array();
+                    for (const auto& iface : info.interfaces) {
+                        ifaceObf.push_back(iface);
+                        auto deobfIface = resolver.resolveToDeobfuscated(iface);
+                        ifaceDeobf.push_back(deobfIface.value_or(iface));
+                    }
+                    if (!ifaceObf.empty()) {
+                        classObj["interfaces"] = std::move(ifaceObf);
+                        classObj["interface"] = std::move(ifaceDeobf);
+                    }
+
+                    json ancestors = json::array();
+                    std::unordered_set<std::string> visited;
+                    std::vector<std::string> stack;
+
+                    if (!info.superName.empty() && info.superName != "java/lang/Object") {
+                        stack.push_back(info.superName);
+                    }
+                    stack.insert(stack.end(), info.interfaces.begin(), info.interfaces.end());
+
+                    while (!stack.empty()) {
+                        std::string current = stack.back();
+                        stack.pop_back();
+
+                        if (!visited.insert(current).second) continue;
+
+                        auto resolved = resolver.resolveToDeobfuscated(current);
+                        ancestors.push_back(resolved.value_or(current));
+
+                        auto hIt = hierarchy.find(current);
+                        if (hIt != hierarchy.end()) {
+                            const auto& node = hIt->second;
+                            if (!node.superClass.empty() && visited.find(node.superClass) == visited.end()) {
+                                stack.push_back(node.superClass);
+                            }
+                            for (const auto& iface : node.interfaces) {
+                                if (visited.find(iface) == visited.end()) {
+                                    stack.push_back(iface);
+                                }
+                            }
+                        }
+                    }
+
+                    if (!ancestors.empty()) {
+                        classObj["ancestors"] = std::move(ancestors);
+                    }
+                }
+            }
+
+            outputJson["classes"].push_back(std::move(classObj));
+            dumpedCount++;
+        }
+
+        std::ofstream outFile(outputPath);
+        if (!outFile.is_open()) {
+            std::cerr << "[JarDumper] Failed to open output file: " << outputPath << std::endl;
+            return false;
+        }
+
+        outFile << outputJson.dump(4);
+        outFile.close();
+
+        std::cout << "[JarDumper] Successfully dumped " << dumpedCount << " classes to " << outputPath << std::endl;
+        return true;
+    }
+
+    std::string JarDumper::getDefaultCacheDir() {
+        if (!cacheDir_.empty()) {
+            return cacheDir_;
+        }
+        if (const char* localAppData = std::getenv("LOCALAPPDATA")) {
+            return std::string(localAppData) + "\\mcobfF\\cache";
+        }
+        return "cache";
+    }
+
+    bool JarDumper::dumpFromVersion(const std::string& version, const std::string& outputPath) {
+        namespace fs = std::filesystem;
+
+        std::string jarCacheDir = getDefaultCacheDir() + "\\jars";
+        fs::create_directories(jarCacheDir);
+        std::string jarPath = jarCacheDir + "\\" + version + ".jar";
+
+        if (!fs::exists(jarPath)) {
+            if (!VersionDownloader::downloadClientJar(version, jarPath)) {
+                std::cerr << "[JarDumper] Failed to download client.jar for version: " << version << std::endl;
+                return false;
+            }
+        } else {
+            std::cout << "[JarDumper] Using cached client.jar: " << jarPath << std::endl;
+        }
+
+        return dump(jarPath, version, outputPath);
+    }
+
+} // namespace mc
