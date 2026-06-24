@@ -867,10 +867,13 @@ void AppState::renderLeftPanel() {
     };
     std::vector<ClosingNodeInfo> closingNodeInfos;
 
+    bool hasClosingAnimation = false;
+    bool hasAnyAnimation = !nodeAnimStates_.empty();
     for (auto& [closePath, rawProgress] : nodeAnimStates_) {
         auto targetIt = nodeAnimTargets_.find(closePath);
         if (targetIt != nodeAnimTargets_.end() && targetIt->second < 0.5f) {
             // This is a closing animation
+            hasClosingAnimation = true;
             auto countIt = closingDescendantCount_.find(closePath);
             if (countIt != closingDescendantCount_.end() && countIt->second > 0) {
                 for (int j = 0; j < (int)cachedDisplayList_.size(); j++) {
@@ -890,10 +893,9 @@ void AppState::renderLeftPanel() {
         }
     }
 
-    ImGuiListClipper clipper;
-    clipper.Begin((int)cachedDisplayList_.size(), ImGui::GetTextLineHeightWithSpacing());
-    while (clipper.Step()) {
-        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
+    // Lambda to render a range of nodes
+    auto renderNodeRange = [&](int startIdx, int endIdx) {
+        for (int i = startIdx; i < endIdx; i++) {
             const FlatNode& fn = cachedDisplayList_[i];
 
             float targetX = baseX + fn.depth * indentWidth;
@@ -932,8 +934,8 @@ void AppState::renderLeftPanel() {
                             auto countIt = closingDescendantCount_.find(ancestorPath);
                             auto parentYIt = parentBottomY_.find(ancestorPath);
                             if (countIt != closingDescendantCount_.end() && parentYIt != parentBottomY_.end()) {
-                                float lineHeight = ImGui::GetTextLineHeightWithSpacing();
-                                float totalHeight = (countIt->second + 1) * lineHeight;
+                                float localLineHeight = ImGui::GetTextLineHeightWithSpacing();
+                                float totalHeight = (countIt->second + 1) * localLineHeight;
                                 // Slide up by total height so all children hide under parent
                                 yOffset += (1.0f - progress) * -totalHeight;
                                 
@@ -981,8 +983,6 @@ void AppState::renderLeftPanel() {
                     bool isDescendant = (myPath.find(cni.path + "/") == 0);
                     if (!isDescendant) {
                         float progress = easeInOutCubic(cni.rawProgress);
-                        // Collapse amount = descendant count * lineHeight
-                        // As progress goes 1->0, (1-progress) goes 0->1
                         float collapseHeight = cni.descendantCount * lineHeight;
                         collapseOffset += (1.0f - progress) * -collapseHeight;
                     }
@@ -996,12 +996,10 @@ void AppState::renderLeftPanel() {
                 pushedAlpha = true;
             }
 
-            // Apply clip rect (progressive sweep for closing, fixed for opening)
+            // Apply clip rect for opening animation
             if (needsClip) {
                 ImVec2 windowPos = ImGui::GetWindowPos();
                 float contentRegionMinY = ImGui::GetWindowContentRegionMin().y;
-                // clipTopY is in window content coordinates (includes scroll offset)
-                // Convert to screen coordinates by adding window position + content region offset
                 ImGui::PushClipRect(
                     ImVec2(windowPos.x, windowPos.y + contentRegionMinY + clipTopY),
                     ImVec2(windowPos.x + ImGui::GetWindowSize().x, windowPos.y + ImGui::GetWindowHeight()),
@@ -1024,22 +1022,17 @@ void AppState::renderLeftPanel() {
                     ImGui::SetNextItemOpen(fn.isOpen, ImGuiCond_Always);
                     bool open = ImGui::TreeNodeEx(fn.displayName.c_str(), flags);
 
-                    // Record this node's bottom Y position for child clipping
-                    // Include yOffset so clip follows parent when it moves
                     std::string path = fn.node->displayPath;
                     parentBottomY_[path] = cursorYBefore + yOffset + lineHeight;
 
                     if (open != fn.isOpen) {
                         if (open) {
                             expandedNodes_.insert(path);
-                            // Start open animation from beginning
                             nodeAnimTargets_[path] = 1.0f;
                             nodeAnimStates_[path] = 0.0f;
                         } else {
                             expandedNodes_.erase(path);
-                            // Start close animation from current state
                             nodeAnimTargets_[path] = 0.0f;
-                            // Count visible descendants for close animation
                             int count = 0;
                             for (int j = i + 1; j < (int)cachedDisplayList_.size(); j++) {
                                 if (cachedDisplayList_[j].depth <= fn.depth) break;
@@ -1065,22 +1058,17 @@ void AppState::renderLeftPanel() {
                     ImGui::SetNextItemOpen(fn.isOpen, ImGuiCond_Always);
                     bool open = ImGui::TreeNodeEx(fn.displayName.c_str(), flags);
 
-                    // Record this node's bottom Y position for child clipping
-                    // Include yOffset so clip follows parent when it moves
                     std::string path = fn.node->displayPath;
                     parentBottomY_[path] = cursorYBefore + yOffset + lineHeight;
 
                     if (open != fn.isOpen) {
                         if (open) {
                             expandedNodes_.insert(path);
-                            // Start open animation from beginning
                             nodeAnimTargets_[path] = 1.0f;
                             nodeAnimStates_[path] = 0.0f;
                         } else {
                             expandedNodes_.erase(path);
-                            // Start close animation from current state
                             nodeAnimTargets_[path] = 0.0f;
-                            // Count visible descendants for progressive close sweep
                             int count = 0;
                             for (int j = i + 1; j < (int)cachedDisplayList_.size(); j++) {
                                 if (cachedDisplayList_[j].depth <= fn.depth) break;
@@ -1135,6 +1123,18 @@ void AppState::renderLeftPanel() {
             if (pushedAlpha) {
                 ImGui::PopStyleVar();
             }
+        }
+    };
+
+    // When any animation is active, render ALL nodes (skip clipper)
+    // to ensure animating children are not culled by the list clipper
+    if (hasAnyAnimation) {
+        renderNodeRange(0, (int)cachedDisplayList_.size());
+    } else {
+        ImGuiListClipper clipper;
+        clipper.Begin((int)cachedDisplayList_.size(), ImGui::GetTextLineHeightWithSpacing());
+        while (clipper.Step()) {
+            renderNodeRange(clipper.DisplayStart, clipper.DisplayEnd);
         }
     }
 
