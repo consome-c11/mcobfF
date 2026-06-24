@@ -1,5 +1,5 @@
 #include "MappingResolver.h"
-#include "MappingParser.h"
+#include "MojMapParser.h"
 #include "TinyMappingParser.h"
 #include <algorithm>
 
@@ -77,7 +77,7 @@ namespace mcobfF
             return false;
         }
 
-        if (!MappingParser::parse(*content, mappings_))
+        if (!MojMapParser::parse(*content, mappings_))
         {
             Logger::error("MappingResolver") << "Failed to parse cache file";
             return false;
@@ -112,7 +112,7 @@ namespace mcobfF
             return false;
         }
 
-        if (!MappingParser::parse(*mappingsContent, mappings_))
+        if (!MojMapParser::parse(*mappingsContent, mappings_))
         {
             Logger::warn("MappingResolver") << "Failed to parse mappings content";
             return false;

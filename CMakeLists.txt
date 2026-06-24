@@ -57,8 +57,8 @@ add_executable(${PROJECT_NAME} ${SOURCES} ${IMGUI_SOURCES}
         mcobfF/mapping/InheritanceResolver.cpp
         mcobfF/mapping/MappingData.h
         mcobfF/mapping/MappingData.cpp
-        mcobfF/mapping/MappingParser.h
-        mcobfF/mapping/MappingParser.cpp
+        mcobfF/mapping/MojMapParser.h
+        mcobfF/mapping/MojMapParser.cpp
         mcobfF/mapping/MappingResolver.h
         mcobfF/mapping/MappingResolver.cpp
         mcobfF/mapping/SRGParser.h
@@ -84,4 +84,4 @@ else()
 endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE "/" mcobfF mcobfF/api mcobfF/dumper gui ${miniz_SOURCE_DIR} ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json miniz winhttp d3d11 d3dcompiler dwmapi)
+target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json miniz winhttp d3d11 d3dcompiler dwmapi comdlg32)

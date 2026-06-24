@@ -7,7 +7,7 @@
 
 namespace mcobfF
 {
-    class MappingParser
+    class MojMapParser
     {
     public:
         [[nodiscard]] static bool parse(const std::string& content, MappingData& mappings);

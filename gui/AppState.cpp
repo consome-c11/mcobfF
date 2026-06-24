@@ -6,6 +6,7 @@
 #include "mcobfF/dumper/JarDumper.h"
 
 #include <windows.h>
+#include <commdlg.h>
 #include <filesystem>
 #include <imgui.h>
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <future>
 #include <functional>
 #include <sstream>
+#include <cmath>
 
 AppState::AppState() {
     cacheDir_ = mcobfF::JarDumper::getDefaultCacheDir();
@@ -46,6 +48,143 @@ void AppState::update() {
                 loadError_ = loadError_.empty() ? "Failed to load version" : loadError_;
             }
         }
+    }
+    if (dumpFuture_.valid()) {
+        if (dumpFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            bool success = dumpFuture_.get();
+            dumping_ = false;
+            if (success) {
+                dumpSuccess_ = true;
+            } else if (dumpError_.empty()) {
+                dumpError_ = "Dump failed";
+            }
+        }
+    }
+
+    // Update animations
+    float deltaTime = ImGui::GetIO().DeltaTime;
+    updateAnimations(deltaTime);
+}
+
+float AppState::easeOutCubic(float t) {
+    // Smooth easing function: starts fast, slows down at the end
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    float f = 1.0f - t;
+    return 1.0f - f * f * f;
+}
+
+float AppState::easeInOutCubic(float t) {
+    // Smooth easing for both directions
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    if (t < 0.5f) {
+        return 4.0f * t * t * t;
+    } else {
+        float f = 1.0f - t;
+        return 1.0f - 4.0f * f * f * f;
+    }
+}
+
+void AppState::updateAnimations(float deltaTime) {
+    const float animDuration = animDuration_; // Use configurable duration
+    const float animSpeed = 1.0f / animDuration;
+    
+    // Helper lambda for smooth linear time-based animation
+    // Easing is applied during rendering, not during time progression
+    auto animateValue = [deltaTime, animSpeed](float& value, float target) {
+        if (std::abs(value - target) < 0.001f) {
+            value = target;
+            return;
+        }
+        float step = deltaTime * animSpeed;
+        if (target > value) {
+            value += step;
+            if (value > target) value = target;
+        } else {
+            value -= step;
+            if (value < target) value = target;
+        }
+    };
+
+    // Check if selection changed
+    bool selectionChanged = (selection_.type != lastSelectionType_) || 
+                            (selection_.entryIndex != lastEntryIndex_);
+    
+    if (selectionChanged) {
+        // Reset animations when selection changes
+        if (selection_.type == Selection::None) {
+            classInfoAnim_ = 0.0f;
+            methodsAnim_ = 0.0f;
+            fieldsAnim_ = 0.0f;
+            methodInfoAnim_ = 0.0f;
+            fieldInfoAnim_ = 0.0f;
+        } else if (selection_.type == Selection::Class) {
+            classInfoAnim_ = 0.0f;
+            methodsAnim_ = 0.0f;
+            fieldsAnim_ = 0.0f;
+            methodInfoAnim_ = 0.0f;
+            fieldInfoAnim_ = 0.0f;
+        } else if (selection_.type == Selection::Method) {
+            methodInfoAnim_ = 0.0f;
+        } else if (selection_.type == Selection::Field) {
+            fieldInfoAnim_ = 0.0f;
+        }
+        lastSelectionType_ = selection_.type;
+        lastEntryIndex_ = selection_.entryIndex;
+    }
+
+    // Animate based on current selection
+    if (selection_.type == Selection::Class) {
+        animateValue(classInfoAnim_, 1.0f);
+        animateValue(methodsAnim_, 1.0f);
+        animateValue(fieldsAnim_, 1.0f);
+    } else if (selection_.type == Selection::Method) {
+        animateValue(methodInfoAnim_, 1.0f);
+    } else if (selection_.type == Selection::Field) {
+        animateValue(fieldInfoAnim_, 1.0f);
+    }
+
+    // Animate panels when loaded
+    if (loaded_) {
+        animateValue(leftPanelAnim_, 1.0f);
+        animateValue(rightPanelAnim_, 1.0f);
+    } else {
+        leftPanelAnim_ = 0.0f;
+        rightPanelAnim_ = 0.0f;
+    }
+
+    // Update tree node animations
+    for (auto& pair : nodeAnimStates_) {
+        const std::string& path = pair.first;
+        float& current = pair.second;
+        float target = 0.0f;
+        
+        auto targetIt = nodeAnimTargets_.find(path);
+        if (targetIt != nodeAnimTargets_.end()) {
+            target = targetIt->second;
+        }
+        
+        animateValue(current, target);
+    }
+    
+    // Remove completed animations (value reached target and is 0.0)
+    std::vector<std::string> toRemove;
+    for (const auto& pair : nodeAnimStates_) {
+        if (pair.second < 0.001f) {
+            auto targetIt = nodeAnimTargets_.find(pair.first);
+            if (targetIt != nodeAnimTargets_.end() && targetIt->second < 0.001f) {
+                toRemove.push_back(pair.first);
+            }
+        }
+    }
+    if (!toRemove.empty()) {
+        for (const auto& path : toRemove) {
+            nodeAnimStates_.erase(path);
+            nodeAnimTargets_.erase(path);
+            closingDescendantCount_.erase(path);
+        }
+        displayListDirty_ = true; // Rebuild display list when animation completes
     }
 }
 
@@ -187,6 +326,7 @@ void AppState::buildTree() {
         for (size_t m = 0; m < entry.methods.size(); m++) {
             TreeNode mn;
             mn.name = entry.methods[m].deobfName + "(...)";
+            mn.displayPath = current->displayPath + "/m" + std::to_string(m);
             mn.type = TreeNode::Method;
             mn.entryIndex = i;
             mn.memberIndex = (int)m;
@@ -208,6 +348,7 @@ void AppState::buildTree() {
         for (size_t f = 0; f < entry.fields.size(); f++) {
             TreeNode fn;
             fn.name = entry.fields[f].deobfName;
+            fn.displayPath = current->displayPath + "/f" + std::to_string(f);
             fn.type = TreeNode::Field;
             fn.entryIndex = i;
             fn.memberIndex = (int)f;
@@ -267,6 +408,21 @@ void AppState::renderGui() {
         ImGui::EndPopup();
     }
 
+    if (dumping_) {
+        ImGui::OpenPopup("Dumping");
+    }
+
+    if (ImGui::BeginPopupModal("Dumping", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (!dumping_) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            ImGui::Text("Dumping mappings for %s...", selectedVersion_.c_str());
+            ImGui::Separator();
+            ImGui::Text("Writing to %s", dumpOutputPath_.c_str());
+        }
+        ImGui::EndPopup();
+    }
+
     if (!loadError_.empty()) {
         ImGui::OpenPopup("Error");
     }
@@ -274,6 +430,33 @@ void AppState::renderGui() {
         ImGui::Text("Error: %s", loadError_.c_str());
         if (ImGui::Button("OK")) {
             loadError_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    if (dumpSuccess_) {
+        ImGui::OpenPopup("Dump Complete");
+    }
+    if (ImGui::BeginPopupModal("Dump Complete", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Successfully dumped mappings for %s", selectedVersion_.c_str());
+        ImGui::Text("Output: %s", dumpOutputPath_.c_str());
+        if (ImGui::Button("OK")) {
+            dumpSuccess_ = false;
+            dumpOutputPath_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    if (!dumpError_.empty()) {
+        ImGui::OpenPopup("Dump Error");
+    }
+    if (ImGui::BeginPopupModal("Dump Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Dump failed:");
+        ImGui::TextWrapped("%s", dumpError_.c_str());
+        if (ImGui::Button("OK")) {
+            dumpError_.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -307,6 +490,10 @@ void AppState::renderGui() {
     if (ImGui::BeginPopup("##FileMenuBar")) {
         if (ImGui::MenuItem("Select Version...", nullptr, false, !loading_)) {
             versionSelectorOpen_ = true;
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Dump Mappings...", nullptr, false, loaded_ && !dumping_)) {
+            dumpRequested();
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Clear Cache")) {
@@ -513,9 +700,16 @@ void AppState::renderVersionSelector() {
 void AppState::renderSettingsWindow() {
     ImGui::Text("Settings");
     ImGui::Separator();
-    ImGui::TextDisabled("Coming soon...");
 
     ImGui::Spacing();
+    ImGui::Text("Animation");
+    ImGui::SliderFloat("Duration", &animDuration_, 0.05f, 1.0f, "%.2f s");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Duration of UI animations in seconds");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
     if (ImGui::Button("Back")) {
         settingsOpen_ = false;
     }
@@ -533,8 +727,41 @@ void AppState::clearCache() {
     startFetchManifest();
 }
 
+void AppState::dumpRequested() {
+    wchar_t filename[MAX_PATH] = {};
+    std::wstring defaultName = std::wstring(selectedVersion_.begin(), selectedVersion_.end()) + L"_mappings.json";
+
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFile = filename;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFilter = L"JSON Files\0*.json\0All Files\0*.*\0";
+    ofn.lpstrDefExt = L"json";
+    ofn.lpstrFileTitle = defaultName.data();
+    ofn.nMaxFileTitle = (DWORD)defaultName.size() + 1;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY;
+
+    if (GetSaveFileNameW(&ofn)) {
+        dumpOutputPath_ = std::filesystem::path(filename).string();
+        dumping_ = true;
+        dumpError_.clear();
+        dumpFuture_ = std::async(std::launch::async, [this]() -> bool {
+            try {
+                return mcobfF::JarDumper::dumpFromVersion(selectedVersion_, dumpOutputPath_);
+            } catch (const std::exception& e) {
+                dumpError_ = e.what();
+                return false;
+            }
+        });
+    }
+}
+
 void AppState::renderLeftPanel() {
     ImGui::BeginChild("LeftPanel", ImVec2(0, 0), false);
+
+    float alpha = easeOutCubic(leftPanelAnim_);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
 
     ImGui::InputText("Search", classFilter_, sizeof(classFilter_));
 
@@ -582,6 +809,7 @@ void AppState::renderLeftPanel() {
 
     if (displayListDirty_) {
         cachedDisplayList_.clear();
+        // Don't clear parentBottomY_ here - it will be updated when nodes are rendered
 
         auto filterPass = [&](const TreeNode& node) -> bool {
             if (!filtering) return true;
@@ -607,7 +835,9 @@ void AppState::renderLeftPanel() {
             fn.type = node.type;
             fn.displayName = buildDisplayName(node);
             std::string path = node.displayPath.empty() ? node.name : node.displayPath;
-            fn.isOpen = filtering || expandedNodes_.count(path) > 0;
+            bool isExpanded = expandedNodes_.count(path) > 0;
+            bool isAnimating = nodeAnimStates_.count(path) > 0;
+            fn.isOpen = filtering || isExpanded || isAnimating;
             cachedDisplayList_.push_back(fn);
             if (fn.isOpen && (node.type == TreeNode::Directory || node.type == TreeNode::ClassEntry)) {
                 for (const auto& child : node.children) {
@@ -626,6 +856,40 @@ void AppState::renderLeftPanel() {
     const float baseX = ImGui::GetWindowContentRegionMin().x;
     const float indentWidth = ImGui::GetTreeNodeToLabelSpacing();
 
+    // Collect closing node infos before the clipper loop
+    // So we know which nodes are below closing nodes and can apply collapse offset
+    struct ClosingNodeInfo {
+        int displayIndex;
+        int depth;
+        int descendantCount;
+        float rawProgress;
+        std::string path;
+    };
+    std::vector<ClosingNodeInfo> closingNodeInfos;
+
+    for (auto& [closePath, rawProgress] : nodeAnimStates_) {
+        auto targetIt = nodeAnimTargets_.find(closePath);
+        if (targetIt != nodeAnimTargets_.end() && targetIt->second < 0.5f) {
+            // This is a closing animation
+            auto countIt = closingDescendantCount_.find(closePath);
+            if (countIt != closingDescendantCount_.end() && countIt->second > 0) {
+                for (int j = 0; j < (int)cachedDisplayList_.size(); j++) {
+                    const std::string& nodePath = cachedDisplayList_[j].node->displayPath;
+                    if (nodePath == closePath) {
+                        closingNodeInfos.push_back({
+                            j,
+                            cachedDisplayList_[j].depth,
+                            countIt->second,
+                            rawProgress,
+                            closePath
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     ImGuiListClipper clipper;
     clipper.Begin((int)cachedDisplayList_.size(), ImGui::GetTextLineHeightWithSpacing());
     while (clipper.Step()) {
@@ -634,6 +898,121 @@ void AppState::renderLeftPanel() {
 
             float targetX = baseX + fn.depth * indentWidth;
             ImGui::SetCursorPosX(targetX);
+            const float lineHeight = ImGui::GetTextLineHeightWithSpacing();
+            float cursorYBefore = ImGui::GetCursorPosY();
+
+            // Check if this node is a child of an animating node
+            float parentAlpha = 1.0f;
+            float yOffset = 0.0f;
+            bool needsClip = false;
+            float clipTopY = 0.0f;
+            bool pushedAlpha = false;
+            bool pushedClip = false;
+
+            if (fn.depth > 0) {
+                std::string path = fn.node->displayPath.empty() ? fn.node->name : fn.node->displayPath;
+
+                // Check all ancestor paths for animations
+                std::string checkPath = path;
+                while (true) {
+                    size_t lastSlash = checkPath.rfind('/');
+                    if (lastSlash == std::string::npos) break;
+                    std::string ancestorPath = checkPath.substr(0, lastSlash);
+
+                    auto animIt = nodeAnimStates_.find(ancestorPath);
+                    if (animIt != nodeAnimStates_.end()) {
+                        float rawProgress = animIt->second;
+                        auto targetIt = nodeAnimTargets_.find(ancestorPath);
+                        bool isClosing = (targetIt != nodeAnimTargets_.end() && targetIt->second < 0.5f);
+
+                        if (isClosing) {
+                            // Closing: upward slide + fixed clip at parent bottom
+                            float progress = easeInOutCubic(rawProgress); // 1->0
+                            
+                            auto countIt = closingDescendantCount_.find(ancestorPath);
+                            auto parentYIt = parentBottomY_.find(ancestorPath);
+                            if (countIt != closingDescendantCount_.end() && parentYIt != parentBottomY_.end()) {
+                                float lineHeight = ImGui::GetTextLineHeightWithSpacing();
+                                float totalHeight = (countIt->second + 1) * lineHeight;
+                                // Slide up by total height so all children hide under parent
+                                yOffset += (1.0f - progress) * -totalHeight;
+                                
+                                // Fixed clip at parent bottom
+                                float thisClipTop = parentYIt->second;
+                                if (!needsClip || thisClipTop > clipTopY) {
+                                    clipTopY = thisClipTop;
+                                    needsClip = true;
+                                }
+                            }
+                        } else {
+                            // Opening: fade in + slide down
+                            float progress = easeInOutCubic(rawProgress); // 0->1
+                            parentAlpha *= progress;
+                            yOffset += (1.0f - progress) * -15.0f;
+
+                            auto parentYIt = parentBottomY_.find(ancestorPath);
+                            if (parentYIt != parentBottomY_.end()) {
+                                float thisClipTop = parentYIt->second;
+                                if (!needsClip || thisClipTop > clipTopY) {
+                                    clipTopY = thisClipTop;
+                                    needsClip = true;
+                                }
+                            }
+                        }
+                    }
+
+                    checkPath = ancestorPath;
+                }
+            }
+
+            // Skip rendering if completely faded out (only during opening)
+            if (parentAlpha < 0.01f) {
+                ImGui::SetCursorPosY(cursorYBefore + lineHeight);
+                continue;
+            }
+
+            // Apply collapse offset: nodes BELOW a closing node (not descendants)
+            // slide up smoothly as the closing node's children disappear
+            float collapseOffset = 0.0f;
+            for (const auto& cni : closingNodeInfos) {
+                if (i > cni.displayIndex) {
+                    // Check if this node is NOT a descendant of the closing node
+                    std::string myPath = fn.node->displayPath.empty() ? fn.node->name : fn.node->displayPath;
+                    bool isDescendant = (myPath.find(cni.path + "/") == 0);
+                    if (!isDescendant) {
+                        float progress = easeInOutCubic(cni.rawProgress);
+                        // Collapse amount = descendant count * lineHeight
+                        // As progress goes 1->0, (1-progress) goes 0->1
+                        float collapseHeight = cni.descendantCount * lineHeight;
+                        collapseOffset += (1.0f - progress) * -collapseHeight;
+                    }
+                }
+            }
+            yOffset += collapseOffset;
+
+            // Apply alpha
+            if (parentAlpha < 0.999f) {
+                ImGui::PushStyleVar(ImGuiStyleVar_Alpha, parentAlpha);
+                pushedAlpha = true;
+            }
+
+            // Apply clip rect (progressive sweep for closing, fixed for opening)
+            if (needsClip) {
+                ImVec2 windowPos = ImGui::GetWindowPos();
+                float contentRegionMinY = ImGui::GetWindowContentRegionMin().y;
+                // clipTopY is in window content coordinates (includes scroll offset)
+                // Convert to screen coordinates by adding window position + content region offset
+                ImGui::PushClipRect(
+                    ImVec2(windowPos.x, windowPos.y + contentRegionMinY + clipTopY),
+                    ImVec2(windowPos.x + ImGui::GetWindowSize().x, windowPos.y + ImGui::GetWindowHeight()),
+                    true
+                );
+                pushedClip = true;
+            }
+
+            if (std::abs(yOffset) > 0.01f) {
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
+            }
 
             switch (fn.type) {
             case TreeNode::Directory: {
@@ -645,10 +1024,29 @@ void AppState::renderLeftPanel() {
                     ImGui::SetNextItemOpen(fn.isOpen, ImGuiCond_Always);
                     bool open = ImGui::TreeNodeEx(fn.displayName.c_str(), flags);
 
+                    // Record this node's bottom Y position for child clipping
+                    // Include yOffset so clip follows parent when it moves
+                    std::string path = fn.node->displayPath;
+                    parentBottomY_[path] = cursorYBefore + yOffset + lineHeight;
+
                     if (open != fn.isOpen) {
-                        std::string path = fn.node->displayPath;
-                        if (open) expandedNodes_.insert(path);
-                        else expandedNodes_.erase(path);
+                        if (open) {
+                            expandedNodes_.insert(path);
+                            // Start open animation from beginning
+                            nodeAnimTargets_[path] = 1.0f;
+                            nodeAnimStates_[path] = 0.0f;
+                        } else {
+                            expandedNodes_.erase(path);
+                            // Start close animation from current state
+                            nodeAnimTargets_[path] = 0.0f;
+                            // Count visible descendants for close animation
+                            int count = 0;
+                            for (int j = i + 1; j < (int)cachedDisplayList_.size(); j++) {
+                                if (cachedDisplayList_[j].depth <= fn.depth) break;
+                                count++;
+                            }
+                            closingDescendantCount_[path] = count;
+                        }
                     }
 
                     if (open) ImGui::TreePop();
@@ -667,10 +1065,29 @@ void AppState::renderLeftPanel() {
                     ImGui::SetNextItemOpen(fn.isOpen, ImGuiCond_Always);
                     bool open = ImGui::TreeNodeEx(fn.displayName.c_str(), flags);
 
+                    // Record this node's bottom Y position for child clipping
+                    // Include yOffset so clip follows parent when it moves
+                    std::string path = fn.node->displayPath;
+                    parentBottomY_[path] = cursorYBefore + yOffset + lineHeight;
+
                     if (open != fn.isOpen) {
-                        std::string path = fn.node->displayPath;
-                        if (open) expandedNodes_.insert(path);
-                        else expandedNodes_.erase(path);
+                        if (open) {
+                            expandedNodes_.insert(path);
+                            // Start open animation from beginning
+                            nodeAnimTargets_[path] = 1.0f;
+                            nodeAnimStates_[path] = 0.0f;
+                        } else {
+                            expandedNodes_.erase(path);
+                            // Start close animation from current state
+                            nodeAnimTargets_[path] = 0.0f;
+                            // Count visible descendants for progressive close sweep
+                            int count = 0;
+                            for (int j = i + 1; j < (int)cachedDisplayList_.size(); j++) {
+                                if (cachedDisplayList_[j].depth <= fn.depth) break;
+                                count++;
+                            }
+                            closingDescendantCount_[path] = count;
+                        }
                     }
 
                     if (fn.type == TreeNode::ClassEntry && ImGui::IsItemClicked()) {
@@ -707,6 +1124,17 @@ void AppState::renderLeftPanel() {
             }
             default: break;
             }
+
+            // Reset cursor to the expected position so that subsequent items
+            // (unrelated to the animation) are NOT displaced upward.
+            ImGui::SetCursorPosY(cursorYBefore + lineHeight);
+
+            if (pushedClip) {
+                ImGui::PopClipRect();
+            }
+            if (pushedAlpha) {
+                ImGui::PopStyleVar();
+            }
         }
     }
 
@@ -714,6 +1142,7 @@ void AppState::renderLeftPanel() {
         displayListDirty_ = true;
     }
 
+    ImGui::PopStyleVar();
     ImGui::EndChild();
 }
 
@@ -987,8 +1416,12 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
 void AppState::renderRightPanel() {
     ImGui::BeginChild("RightPanel", ImVec2(0, 0), true);
 
+    float alpha = easeOutCubic(rightPanelAnim_);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+
     if (selection_.type == Selection::None) {
         ImGui::Text("Select a class, method, or field from the left panel.");
+        ImGui::PopStyleVar();
         ImGui::EndChild();
         return;
     }
@@ -1008,6 +1441,7 @@ void AppState::renderRightPanel() {
             break;
     }
 
+    ImGui::PopStyleVar();
     ImGui::EndChild();
 }
 
@@ -1028,121 +1462,157 @@ void AppState::renderClassDetails(int entryIndex) {
     const auto& entry = api_->getMappingData().entries[entryIndex];
     const auto& ci = entry.classInfo;
 
-    ImGui::Text("Class Details");
-    ImGui::Separator();
+    // Class Info Table with animation
+    float alpha = classInfoAnim_;
+    if (alpha > 0.001f) {
+        float easedAlpha = easeOutCubic(alpha);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, easedAlpha);
+        
+        // Animated height offset
+        float yOffset = (1.0f - easedAlpha) * 15.0f;
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
 
-    if (ImGui::BeginTable("ClassInfo", 2, ImGuiTableFlags_RowBg)) {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
-        ImGui::TableNextColumn(); CopyableText(ci.deobfClass.c_str());
+        ImGui::Text("Class Details");
+        ImGui::Separator();
 
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn(); ImGui::Text("Official");
-        ImGui::TableNextColumn(); CopyableText(ci.obfClass.c_str());
-
-        if (ci.srgClass) {
+        if (ImGui::BeginTable("ClassInfo", 2, ImGuiTableFlags_RowBg)) {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("SRG");
-            ImGui::TableNextColumn(); CopyableText(ci.srgClass->c_str());
-        }
+            ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
+            ImGui::TableNextColumn(); CopyableText(ci.deobfClass.c_str());
 
-        if (ci.intermediaryClass) {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Intermediary");
-            ImGui::TableNextColumn(); CopyableText(ci.intermediaryClass->c_str());
-        }
+            ImGui::TableNextColumn(); ImGui::Text("Official");
+            ImGui::TableNextColumn(); CopyableText(ci.obfClass.c_str());
 
-        ImGui::EndTable();
+            if (ci.srgClass) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("SRG");
+                ImGui::TableNextColumn(); CopyableText(ci.srgClass->c_str());
+            }
+
+            if (ci.intermediaryClass) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("Intermediary");
+                ImGui::TableNextColumn(); CopyableText(ci.intermediaryClass->c_str());
+            }
+
+            ImGui::EndTable();
+        }
+        ImGui::PopStyleVar();
     }
 
     ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Text("Methods (%zu)", entry.methods.size());
-    ImGui::Separator();
 
-    if (ImGui::BeginTable("Methods", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
-                          ImVec2(0, 150)))
-    {
-        ImGui::TableSetupColumn("Deobf");
-        ImGui::TableSetupColumn("Official");
-        ImGui::TableSetupColumn("Intermediary");
-        ImGui::TableSetupColumn("SRG");
-        ImGui::TableSetupColumn("Descriptor");
-        ImGui::TableHeadersRow();
+    // Methods Table with animation
+    alpha = methodsAnim_;
+    if (alpha > 0.001f) {
+        float easedAlpha = easeOutCubic(alpha);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, easedAlpha);
+        
+        float yOffset = (1.0f - easedAlpha) * 15.0f;
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
 
-        for (size_t i = 0; i < entry.methods.size(); i++) {
-            const auto& m = entry.methods[i];
-            ImGui::TableNextRow();
-            auto navToMethod = [&]() {
-                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
-                    selection_.type = Selection::Method;
-                    selection_.memberIndex = (int)i;
+        ImGui::Separator();
+        ImGui::Text("Methods (%zu)", entry.methods.size());
+        ImGui::Separator();
+
+        if (ImGui::BeginTable("Methods", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+                              ImVec2(0, 150)))
+        {
+            ImGui::TableSetupColumn("Deobf");
+            ImGui::TableSetupColumn("Official");
+            ImGui::TableSetupColumn("Intermediary");
+            ImGui::TableSetupColumn("SRG");
+            ImGui::TableSetupColumn("Descriptor");
+            ImGui::TableHeadersRow();
+
+            for (size_t i = 0; i < entry.methods.size(); i++) {
+                const auto& m = entry.methods[i];
+                ImGui::TableNextRow();
+                auto navToMethod = [&]() {
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+                        selection_.type = Selection::Method;
+                        selection_.memberIndex = (int)i;
+                    }
+                };
+                ImGui::TableNextColumn(); CopyableText(m.deobfName.c_str()); navToMethod();
+                ImGui::TableNextColumn(); CopyableText(m.obfName.c_str()); navToMethod();
+                ImGui::TableNextColumn();
+                if (m.intermediaryName) {
+                    CopyableText(m.intermediaryName->c_str());
+                } else {
+                    ImGui::TextDisabled("-");
                 }
-            };
-            ImGui::TableNextColumn(); CopyableText(m.deobfName.c_str()); navToMethod();
-            ImGui::TableNextColumn(); CopyableText(m.obfName.c_str()); navToMethod();
-            ImGui::TableNextColumn();
-            if (m.intermediaryName) {
-                CopyableText(m.intermediaryName->c_str());
-            } else {
-                ImGui::TextDisabled("-");
+                navToMethod();
+                ImGui::TableNextColumn();
+                if (m.srgName) {
+                    CopyableText(m.srgName->c_str());
+                } else {
+                    ImGui::TextDisabled("-");
+                }
+                navToMethod();
+                ImGui::TableNextColumn(); CopyableText(m.jvmDescriptor.c_str()); navToMethod();
             }
-            navToMethod();
-            ImGui::TableNextColumn();
-            if (m.srgName) {
-                CopyableText(m.srgName->c_str());
-            } else {
-                ImGui::TextDisabled("-");
-            }
-            navToMethod();
-            ImGui::TableNextColumn(); CopyableText(m.jvmDescriptor.c_str()); navToMethod();
+            ImGui::EndTable();
         }
-        ImGui::EndTable();
+        ImGui::PopStyleVar();
     }
 
     ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Text("Fields (%zu)", entry.fields.size());
-    ImGui::Separator();
 
-    if (ImGui::BeginTable("Fields", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
-                          ImVec2(0, 150)))
-    {
-        ImGui::TableSetupColumn("Deobf");
-        ImGui::TableSetupColumn("Official");
-        ImGui::TableSetupColumn("Intermediary");
-        ImGui::TableSetupColumn("SRG");
-        ImGui::TableSetupColumn("Type");
-        ImGui::TableHeadersRow();
+    // Fields Table with animation
+    alpha = fieldsAnim_;
+    if (alpha > 0.001f) {
+        float easedAlpha = easeOutCubic(alpha);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, easedAlpha);
+        
+        float yOffset = (1.0f - easedAlpha) * 15.0f;
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
 
-        for (size_t i = 0; i < entry.fields.size(); i++) {
-            const auto& f = entry.fields[i];
-            ImGui::TableNextRow();
-            auto navToField = [&]() {
-                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
-                    selection_.type = Selection::Field;
-                    selection_.memberIndex = (int)i;
+        ImGui::Separator();
+        ImGui::Text("Fields (%zu)", entry.fields.size());
+        ImGui::Separator();
+
+        if (ImGui::BeginTable("Fields", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+                              ImVec2(0, 150)))
+        {
+            ImGui::TableSetupColumn("Deobf");
+            ImGui::TableSetupColumn("Official");
+            ImGui::TableSetupColumn("Intermediary");
+            ImGui::TableSetupColumn("SRG");
+            ImGui::TableSetupColumn("Type");
+            ImGui::TableHeadersRow();
+
+            for (size_t i = 0; i < entry.fields.size(); i++) {
+                const auto& f = entry.fields[i];
+                ImGui::TableNextRow();
+                auto navToField = [&]() {
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+                        selection_.type = Selection::Field;
+                        selection_.memberIndex = (int)i;
+                    }
+                };
+                ImGui::TableNextColumn(); CopyableText(f.deobfName.c_str()); navToField();
+                ImGui::TableNextColumn(); CopyableText(f.obfName.c_str()); navToField();
+                ImGui::TableNextColumn();
+                if (f.intermediaryName) {
+                    CopyableText(f.intermediaryName->c_str());
+                } else {
+                    ImGui::TextDisabled("-");
                 }
-            };
-            ImGui::TableNextColumn(); CopyableText(f.deobfName.c_str()); navToField();
-            ImGui::TableNextColumn(); CopyableText(f.obfName.c_str()); navToField();
-            ImGui::TableNextColumn();
-            if (f.intermediaryName) {
-                CopyableText(f.intermediaryName->c_str());
-            } else {
-                ImGui::TextDisabled("-");
+                navToField();
+                ImGui::TableNextColumn();
+                if (f.srgName) {
+                    CopyableText(f.srgName->c_str());
+                } else {
+                    ImGui::TextDisabled("-");
+                }
+                navToField();
+                ImGui::TableNextColumn(); CopyableText(f.type.c_str()); navToField();
             }
-            navToField();
-            ImGui::TableNextColumn();
-            if (f.srgName) {
-                CopyableText(f.srgName->c_str());
-            } else {
-                ImGui::TextDisabled("-");
-            }
-            navToField();
-            ImGui::TableNextColumn(); CopyableText(f.type.c_str()); navToField();
+            ImGui::EndTable();
         }
-        ImGui::EndTable();
+        ImGui::PopStyleVar();
     }
 }
 
@@ -1152,70 +1622,81 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex) {
     if (memberIndex < 0 || memberIndex >= (int)entry.methods.size()) return;
     const auto& m = entry.methods[memberIndex];
 
-    ImGui::Text("Method Details");
-    ImGui::Separator();
+    float alpha = methodInfoAnim_;
+    if (alpha > 0.001f) {
+        float easedAlpha = easeOutCubic(alpha);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, easedAlpha);
+        
+        float yOffset = (1.0f - easedAlpha) * 15.0f;
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
 
-    if (ImGui::BeginTable("MethodInfo", 2, ImGuiTableFlags_RowBg)) {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
-        ImGui::TableNextColumn(); CopyableText(m.deobfName.c_str());
+        ImGui::Text("Method Details");
+        ImGui::Separator();
 
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn(); ImGui::Text("Official");
-        ImGui::TableNextColumn(); CopyableText(m.obfName.c_str());
-
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn(); ImGui::Text("Descriptor");
-        ImGui::TableNextColumn(); CopyableText(m.jvmDescriptor.c_str());
-
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn(); ImGui::Text("Return Type");
-        ImGui::TableNextColumn(); CopyableText(m.returnType.c_str());
-
-        if (!m.paramTypes.empty()) {
+        if (ImGui::BeginTable("MethodInfo", 2, ImGuiTableFlags_RowBg)) {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Parameters");
-            std::string params;
-            for (size_t i = 0; i < m.paramTypes.size(); i++) {
-                if (i > 0) params += ", ";
-                params += m.paramTypes[i];
+            ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
+            ImGui::TableNextColumn(); CopyableText(m.deobfName.c_str());
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::Text("Official");
+            ImGui::TableNextColumn(); CopyableText(m.obfName.c_str());
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::Text("Descriptor");
+            ImGui::TableNextColumn(); CopyableText(m.jvmDescriptor.c_str());
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::Text("Return Type");
+            ImGui::TableNextColumn(); CopyableText(m.returnType.c_str());
+
+            if (!m.paramTypes.empty()) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("Parameters");
+                std::string params;
+                for (size_t i = 0; i < m.paramTypes.size(); i++) {
+                    if (i > 0) params += ", ";
+                    params += m.paramTypes[i];
+                }
+                ImGui::TableNextColumn(); CopyableText(params.c_str());
             }
-            ImGui::TableNextColumn(); CopyableText(params.c_str());
-        }
 
-        if (m.srgName) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("SRG");
-            ImGui::TableNextColumn(); CopyableText(m.srgName->c_str());
-        }
-
-        if (m.intermediaryName) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Intermediary");
-            ImGui::TableNextColumn(); CopyableText(m.intermediaryName->c_str());
-        }
-
-        if (m.startLine) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Line Range");
-            if (m.endLine) {
-                std::string lineRange = std::to_string(*m.startLine) + " - " + std::to_string(*m.endLine);
-                ImGui::TableNextColumn(); CopyableText(lineRange.c_str());
-            } else {
-                std::string lineRange = std::to_string(*m.startLine);
-                ImGui::TableNextColumn(); CopyableText(lineRange.c_str());
+            if (m.srgName) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("SRG");
+                ImGui::TableNextColumn(); CopyableText(m.srgName->c_str());
             }
+
+            if (m.intermediaryName) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("Intermediary");
+                ImGui::TableNextColumn(); CopyableText(m.intermediaryName->c_str());
+            }
+
+            if (m.startLine) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("Line Range");
+                if (m.endLine) {
+                    std::string lineRange = std::to_string(*m.startLine) + " - " + std::to_string(*m.endLine);
+                    ImGui::TableNextColumn(); CopyableText(lineRange.c_str());
+                } else {
+                    std::string lineRange = std::to_string(*m.startLine);
+                    ImGui::TableNextColumn(); CopyableText(lineRange.c_str());
+                }
+            }
+
+            ImGui::EndTable();
         }
 
-        ImGui::EndTable();
-    }
-
-    ImGui::Spacing();
-    ImGui::Text("Class: %s", entry.classInfo.deobfClass.c_str());
-    if (ImGui::Button("Show Class")) {
-        selection_.type = Selection::Class;
-        selection_.entryIndex = entryIndex;
-        selection_.memberIndex = -1;
+        ImGui::Spacing();
+        ImGui::Text("Class: %s", entry.classInfo.deobfClass.c_str());
+        if (ImGui::Button("Show Class")) {
+            selection_.type = Selection::Class;
+            selection_.entryIndex = entryIndex;
+            selection_.memberIndex = -1;
+        }
+        
+        ImGui::PopStyleVar();
     }
 }
 
@@ -1225,48 +1706,59 @@ void AppState::renderFieldDetails(int entryIndex, int memberIndex) {
     if (memberIndex < 0 || memberIndex >= (int)entry.fields.size()) return;
     const auto& f = entry.fields[memberIndex];
 
-    ImGui::Text("Field Details");
-    ImGui::Separator();
+    float alpha = fieldInfoAnim_;
+    if (alpha > 0.001f) {
+        float easedAlpha = easeOutCubic(alpha);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, easedAlpha);
+        
+        float yOffset = (1.0f - easedAlpha) * 15.0f;
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
 
-    if (ImGui::BeginTable("FieldInfo", 2, ImGuiTableFlags_RowBg)) {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
-        ImGui::TableNextColumn(); CopyableText(f.deobfName.c_str());
+        ImGui::Text("Field Details");
+        ImGui::Separator();
 
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn(); ImGui::Text("Official");
-        ImGui::TableNextColumn(); CopyableText(f.obfName.c_str());
-
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn(); ImGui::Text("Type");
-        ImGui::TableNextColumn(); CopyableText(f.type.c_str());
-
-        if (f.srgName) {
+        if (ImGui::BeginTable("FieldInfo", 2, ImGuiTableFlags_RowBg)) {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("SRG");
-            ImGui::TableNextColumn(); CopyableText(f.srgName->c_str());
+            ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
+            ImGui::TableNextColumn(); CopyableText(f.deobfName.c_str());
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::Text("Official");
+            ImGui::TableNextColumn(); CopyableText(f.obfName.c_str());
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::Text("Type");
+            ImGui::TableNextColumn(); CopyableText(f.type.c_str());
+
+            if (f.srgName) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("SRG");
+                ImGui::TableNextColumn(); CopyableText(f.srgName->c_str());
+            }
+
+            if (f.intermediaryName) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("Intermediary");
+                ImGui::TableNextColumn(); CopyableText(f.intermediaryName->c_str());
+            }
+
+            if (f.lineNumber) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("Line");
+                ImGui::TableNextColumn(); CopyableText(std::to_string(*f.lineNumber).c_str());
+            }
+
+            ImGui::EndTable();
         }
 
-        if (f.intermediaryName) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Intermediary");
-            ImGui::TableNextColumn(); CopyableText(f.intermediaryName->c_str());
+        ImGui::Spacing();
+        ImGui::Text("Class: %s", entry.classInfo.deobfClass.c_str());
+        if (ImGui::Button("Show Class")) {
+            selection_.type = Selection::Class;
+            selection_.entryIndex = entryIndex;
+            selection_.memberIndex = -1;
         }
-
-        if (f.lineNumber) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Line");
-            ImGui::TableNextColumn(); CopyableText(std::to_string(*f.lineNumber).c_str());
-        }
-
-        ImGui::EndTable();
-    }
-
-    ImGui::Spacing();
-    ImGui::Text("Class: %s", entry.classInfo.deobfClass.c_str());
-    if (ImGui::Button("Show Class")) {
-        selection_.type = Selection::Class;
-        selection_.entryIndex = entryIndex;
-        selection_.memberIndex = -1;
+        
+        ImGui::PopStyleVar();
     }
 }

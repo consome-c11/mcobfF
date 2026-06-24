@@ -2,7 +2,7 @@
 #include <sstream>
 #include <algorithm>
 
-#include "MappingParser.h"
+#include "MojMapParser.h"
 
 namespace mcobfF
 {
@@ -25,14 +25,16 @@ namespace mcobfF
                         break;
                     }
                     std::string obfCls = desc.substr(i + 1, end - i - 1);
-                    auto it = mappings.obfClassIndex.find(obfCls);
+                    std::string normalizedObfCls = MojMapParser::normalizeType(obfCls);
+
+                    auto it = mappings.obfClassIndex.find(normalizedObfCls);
                     if (it != mappings.obfClassIndex.end())
                     {
                         result += "L" + mappings.entries[it->second].classInfo.deobfClass + ";";
                     }
                     else
                     {
-                        result += "L" + obfCls + ";";
+                        result += "L" + normalizedObfCls + ";";
                     }
                     i = end + 1;
                 }
@@ -71,15 +73,16 @@ namespace mcobfF
 
             if (className.empty() || obf.empty() || inter.empty()) return;
 
-            const auto classIt = mappings.obfClassIndex.find(className);
+            std::string normalizedClassName = MojMapParser::normalizeType(className);
+            const auto classIt = mappings.obfClassIndex.find(normalizedClassName);
             if (classIt == mappings.obfClassIndex.end()) return;
 
             const std::string remappedDesc = remapDescriptor(desc, mappings);
-            std::string normalizedDesc = MappingParser::descriptorToNormalizedType(remappedDesc);
+            std::string normalizedDesc = MojMapParser::descriptorToNormalizedType(remappedDesc);
 
             for (auto& entry = mappings.entries[classIt->second]; auto& field : entry.fields)
             {
-                if (field.obfName == obf)
+                if (field.obfName == obf && field.type == normalizedDesc)
                 {
                     field.intermediaryName = inter;
                     break;
@@ -97,7 +100,8 @@ namespace mcobfF
 
             if (className.empty() || obf.empty() || inter.empty()) return;
 
-            const auto classIt = mappings.obfClassIndex.find(className);
+            std::string normalizedClassName = MojMapParser::normalizeType(className);
+            const auto classIt = mappings.obfClassIndex.find(normalizedClassName);
             if (classIt == mappings.obfClassIndex.end()) return;
 
             std::string remappedDesc = remapDescriptor(desc, mappings);

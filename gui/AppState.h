@@ -4,6 +4,7 @@
 #include <memory>
 #include <future>
 #include <set>
+#include <map>
 
 struct HWND__;
 using HWND = HWND__*;
@@ -60,6 +61,7 @@ private:
     void renderVersionSelector();
     void renderSettingsWindow();
     void clearCache();
+    void dumpRequested();
     void renderLeftPanel();
     void flattenTree(std::vector<FlatNode>& out, const TreeNode& node, int depth);
     static std::string buildDisplayName(const TreeNode& node);
@@ -109,4 +111,34 @@ private:
     std::vector<FlatNode> cachedDisplayList_;
     bool displayListDirty_ = true;
     char lastFilter_[256] = {};
+
+    bool dumping_ = false;
+    bool dumpSuccess_ = false;
+    std::string dumpError_;
+    std::string dumpOutputPath_;
+    std::future<bool> dumpFuture_;
+
+    // Animation states
+    float classInfoAnim_ = 0.0f;
+    float methodsAnim_ = 0.0f;
+    float fieldsAnim_ = 0.0f;
+    float methodInfoAnim_ = 0.0f;
+    float fieldInfoAnim_ = 0.0f;
+    float leftPanelAnim_ = 0.0f;
+    float rightPanelAnim_ = 0.0f;
+
+    // Tree node animation states (path -> animation progress 0.0-1.0)
+    std::map<std::string, float> nodeAnimStates_;
+    std::map<std::string, float> nodeAnimTargets_; // Target state (0.0 = closed, 1.0 = open)
+    std::map<std::string, float> parentBottomY_; // Track parent node bottom Y for clipping
+    std::map<std::string, int> closingDescendantCount_; // Visible descendant count when closing started
+
+    float animDuration_ = 0.3f; // Animation duration in seconds (configurable)
+
+    int lastEntryIndex_ = -1;
+    Selection::Type lastSelectionType_ = Selection::None;
+
+    void updateAnimations(float deltaTime);
+    float easeOutCubic(float t);
+    float easeInOutCubic(float t);
 };

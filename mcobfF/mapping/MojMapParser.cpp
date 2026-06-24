@@ -1,4 +1,4 @@
-#include "MappingParser.h"
+#include "MojMapParser.h"
 #include <regex>
 #include <sstream>
 #include <algorithm>
@@ -38,7 +38,7 @@ namespace mcobfF
             std::string param;
             while (std::getline(paramStream, param, ','))
             {
-                result.push_back(MappingParser::normalizeType(param));
+                result.push_back(MojMapParser::normalizeType(param));
             }
             return result;
         }
@@ -48,17 +48,17 @@ namespace mcobfF
             std::string descriptor = "(";
             for (const auto& p : paramTypes)
             {
-                descriptor += MappingParser::typeToDescriptor(p);
+                descriptor += MojMapParser::typeToDescriptor(p);
             }
-            descriptor += ")" + MappingParser::typeToDescriptor(returnType);
+            descriptor += ")" + MojMapParser::typeToDescriptor(returnType);
             return descriptor;
         }
 
         std::optional<ClassMapping> parseClassLine(const std::smatch& match)
         {
             ClassMapping c;
-            c.deobfClass = MappingParser::normalizeType(match[1].str());
-            c.obfClass = MappingParser::normalizeType(match[2].str());
+            c.deobfClass = MojMapParser::normalizeType(match[1].str());
+            c.obfClass = MojMapParser::normalizeType(match[2].str());
             return c;
         }
 
@@ -68,7 +68,7 @@ namespace mcobfF
             if (match[1].matched) m.startLine = std::stoi(match[1].str());
             if (match[2].matched) m.endLine = std::stoi(match[2].str());
 
-            m.returnType = MappingParser::normalizeType(match[3].str());
+            m.returnType = MojMapParser::normalizeType(match[3].str());
             m.deobfName = match[4].str();
             m.obfName = match[6].str();
             m.paramTypes = parseParams(match[5].str());
@@ -81,14 +81,14 @@ namespace mcobfF
         {
             FieldMapping f;
             if (match[1].matched) f.lineNumber = std::stoi(match[1].str());
-            f.type = MappingParser::normalizeType(match[3].str());
+            f.type = MojMapParser::normalizeType(match[3].str());
             f.deobfName = match[4].str();
             f.obfName = match[5].str();
             return f;
         }
     }
 
-    std::string MappingParser::typeToDescriptor(const std::string& type)
+    std::string MojMapParser::typeToDescriptor(const std::string& type)
     {
         if (type.empty()) return "V";
 
@@ -128,7 +128,7 @@ namespace mcobfF
         return "L" + normalizeType(type) + ";";
     }
 
-    std::string MappingParser::normalizeType(const std::string& type)
+    std::string MojMapParser::normalizeType(const std::string& type)
     {
         std::string result = type;
         const size_t first = result.find_first_not_of(" \t");
@@ -139,7 +139,7 @@ namespace mcobfF
         return result;
     }
 
-    std::optional<MappingParser::ParsedLine> MappingParser::parseLine(const std::string& line)
+    std::optional<MojMapParser::ParsedLine> MojMapParser::parseLine(const std::string& line)
     {
         std::smatch match;
 
@@ -161,7 +161,7 @@ namespace mcobfF
         return std::nullopt;
     }
 
-    std::string MappingParser::descriptorToNormalizedType(const std::string& descriptor)
+    std::string MojMapParser::descriptorToNormalizedType(const std::string& descriptor)
     {
         if (descriptor.empty()) return "";
 
@@ -220,7 +220,7 @@ namespace mcobfF
         return normalizeType(baseType);
     }
 
-    bool MappingParser::parse(const std::string& content, MappingData& mappings)
+    bool MojMapParser::parse(const std::string& content, MappingData& mappings)
     {
         std::istringstream stream(content);
         std::string line;
