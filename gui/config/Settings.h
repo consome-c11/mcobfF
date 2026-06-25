@@ -13,8 +13,10 @@ namespace mcobfF {
 enum class SettingKey {
     AnimationDuration,
     ShowIntermediaryNames,
+    ShowObfNames,
     ShowSrgNames,
     ShowIntermediaryNamesRight,
+    ShowObfNamesRight,
     ShowSrgNamesRight,
     MaxSearchResults,
     AutoFetchManifest,

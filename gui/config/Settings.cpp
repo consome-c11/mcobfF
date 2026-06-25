@@ -19,8 +19,10 @@ Settings::Settings() {
 
     define(SettingKey::AnimationDuration,        0.3f,      0.05f, 1.0f, "Duration of UI animations in seconds",                       "Animation");
     define(SettingKey::ShowIntermediaryNames,     true,      {},    {},   "Show intermediary mapping names in left tree view",           "Display");
+    define(SettingKey::ShowObfNames,              false,     {},    {},   "Show obfuscated (official/notch) names in left tree view",    "Display");
     define(SettingKey::ShowSrgNames,              true,      {},    {},   "Show SRG mapping names in left tree view",                    "Display");
     define(SettingKey::ShowIntermediaryNamesRight, true,     {},    {},   "Show intermediary names in right detail panel",               "Display");
+    define(SettingKey::ShowObfNamesRight,          false,    {},    {},   "Show obfuscated (official/notch) names in right detail panel","Display");
     define(SettingKey::ShowSrgNamesRight,         true,      {},    {},   "Show SRG names in right detail panel",                        "Display");
     //define(SettingKey::MaxSearchResults,          100,       10,    1000, "Maximum number of search results to display",                  "Search");
     //define(SettingKey::AutoFetchManifest,         true,      {},    {},   "Automatically fetch version manifest on startup",              "Network");

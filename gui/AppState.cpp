@@ -308,6 +308,12 @@ void AppState::buildTree() {
             }
         }
 
+        std::string obfClassShort;
+        if (!entry.classInfo.obfClass.empty()) {
+            size_t lastSlash = entry.classInfo.obfClass.rfind('/');
+            obfClassShort = (lastSlash != std::string::npos) ? entry.classInfo.obfClass.substr(lastSlash + 1) : entry.classInfo.obfClass;
+        }
+
         TreeNode* current = &treeRoot_;
         std::string path;
         for (size_t j = 0; j < parts.size(); j++) {
@@ -335,6 +341,9 @@ void AppState::buildTree() {
                         newNode.srgName = (lastSlash != std::string::npos) ? srg.substr(lastSlash + 1) : srg;
                     }
                 }
+                if (j == parts.size() - 1 && !obfClassShort.empty()) {
+                    newNode.obfName = obfClassShort;
+                }
                 current->children.push_back(std::move(newNode));
                 current = &current->children.back();
             }
@@ -347,6 +356,9 @@ void AppState::buildTree() {
             mn.type = TreeNode::Method;
             mn.entryIndex = i;
             mn.memberIndex = (int)m;
+            if (!entry.methods[m].obfName.empty()) {
+                mn.obfName = entry.methods[m].obfName;
+            }
             if (entry.methods[m].intermediaryName.has_value()) {
                 const std::string& interName = entry.methods[m].intermediaryName.value();
                 if (!interName.empty()) {
@@ -369,6 +381,9 @@ void AppState::buildTree() {
             fn.type = TreeNode::Field;
             fn.entryIndex = i;
             fn.memberIndex = (int)f;
+            if (!entry.fields[f].obfName.empty()) {
+                fn.obfName = entry.fields[f].obfName;
+            }
             if (entry.fields[f].intermediaryName.has_value()) {
                 const std::string& interName = entry.fields[f].intermediaryName.value();
                 if (!interName.empty()) {
@@ -845,10 +860,12 @@ void AppState::renderLeftPanel() {
             }
             if (hasPipe_) {
                 return matchesFilter(node.name, memberFilter)
+                    || matchesFilter(node.obfName, memberFilter)
                     || matchesFilter(node.intermediaryName, memberFilter)
                     || matchesFilter(node.srgName, memberFilter);
             }
             return matchesFilter(node.name, rawFilter)
+                || matchesFilter(node.obfName, rawFilter)
                 || matchesFilter(node.intermediaryName, rawFilter)
                 || matchesFilter(node.srgName, rawFilter);
         };
@@ -1202,17 +1219,21 @@ void AppState::flattenTree(std::vector<FlatNode>& out, const TreeNode& node, int
 
 std::string AppState::buildDisplayName(const TreeNode& node) {
     const bool showIntermediary = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNames);
+    const bool showObf = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowObfNames);
     const bool showSrg = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNames);
 
     std::string name = node.name;
     if (node.type == TreeNode::ClassEntry) {
         if (showIntermediary && !node.intermediaryName.empty())
             name += " [" + node.intermediaryName + "]";
+        if (showObf && !node.obfName.empty())
+            name += " [" + node.obfName + "]";
         if (showSrg && !node.srgName.empty())
             name += " [" + node.srgName + "]";
     } else if (node.type == TreeNode::Method) {
         std::string suffix;
         if (showIntermediary && !node.intermediaryName.empty()) suffix += " [" + node.intermediaryName + "]";
+        if (showObf && !node.obfName.empty()) suffix += " [" + node.obfName + "]";
         if (showSrg && !node.srgName.empty()) suffix += " [" + node.srgName + "]";
         if (!suffix.empty()) {
             size_t pos = name.rfind("(...)");
@@ -1223,6 +1244,7 @@ std::string AppState::buildDisplayName(const TreeNode& node) {
         }
     } else if (node.type == TreeNode::Field) {
         if (showIntermediary && !node.intermediaryName.empty()) name += " [" + node.intermediaryName + "]";
+        if (showObf && !node.obfName.empty()) name += " [" + node.obfName + "]";
         if (showSrg && !node.srgName.empty()) name += " [" + node.srgName + "]";
     }
     return name;
@@ -1241,6 +1263,7 @@ bool AppState::treeNodeMatchesFilter(const TreeNode& node, const std::string& cl
         if (filter.empty()) return true;
         for (const auto& child : n.children) {
             if (matchesFilter(child.name, filter)) return true;
+            if (!child.obfName.empty() && matchesFilter(child.obfName, filter)) return true;
             if (!child.intermediaryName.empty() && matchesFilter(child.intermediaryName, filter)) return true;
             if (!child.srgName.empty() && matchesFilter(child.srgName, filter)) return true;
             if (anyDescendantMatches(child, filter)) return true;
@@ -1250,6 +1273,7 @@ bool AppState::treeNodeMatchesFilter(const TreeNode& node, const std::string& cl
 
     bool classMatch = classFilter.empty()
         || matchesFilter(node.name, classFilter)
+        || matchesFilter(node.obfName, classFilter)
         || matchesFilter(node.intermediaryName, classFilter)
         || matchesFilter(node.srgName, classFilter)
         || matchesFilter(node.displayPath, classFilter);
@@ -1268,6 +1292,7 @@ bool AppState::treeNodeMatchesFilter(const TreeNode& node, const std::string& cl
 
 void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, const std::string& memberFilter, bool filtering) {
     const bool showIntermediary = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNames);
+    const bool showObf = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowObfNames);
     const bool showSrg = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNames);
 
     auto matchesFilter = [](const std::string& str, const std::string& filter) -> bool {
@@ -1326,6 +1351,7 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
         bool hasActiveFilter = filtering && (!classFilter.empty() || !memberFilter.empty());
 
         bool classMatches = matchesFilter(node.name, classFilter)
+            || matchesFilter(node.obfName, classFilter)
             || matchesFilter(node.intermediaryName, classFilter)
             || matchesFilter(node.srgName, classFilter)
             || matchesFilter(node.displayPath, classFilter);
@@ -1333,6 +1359,7 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
         if (!childFilter.empty()) {
             for (auto& child : node.children) {
                 if (matchesFilter(child.name, childFilter)
+                    || matchesFilter(child.obfName, childFilter)
                     || matchesFilter(child.intermediaryName, childFilter)
                     || matchesFilter(child.srgName, childFilter))
                 {
@@ -1355,6 +1382,9 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
         std::string displayName = node.name;
         if (showIntermediary && !node.intermediaryName.empty()) {
             displayName += " [" + node.intermediaryName + "]";
+        }
+        if (showObf && !node.obfName.empty()) {
+            displayName += " [" + node.obfName + "]";
         }
         if (showSrg && !node.srgName.empty()) {
             displayName += " [" + node.srgName + "]";
@@ -1392,6 +1422,7 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
         if (open) {
             for (auto& child : node.children) {
                 if (hasActiveFilter && !matchesFilter(child.name, childFilter)
+                    && !matchesFilter(child.obfName, childFilter)
                     && !matchesFilter(child.intermediaryName, childFilter)
                     && !matchesFilter(child.srgName, childFilter))
                 {
@@ -1402,6 +1433,9 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
                     std::string suffix;
                     if (showIntermediary && !child.intermediaryName.empty()) {
                         suffix += " [" + child.intermediaryName + "]";
+                    }
+                    if (showObf && !child.obfName.empty()) {
+                        suffix += " [" + child.obfName + "]";
                     }
                     if (showSrg && !child.srgName.empty()) {
                         suffix += " [" + child.srgName + "]";
@@ -1427,6 +1461,9 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
                     std::string childDisplay = child.name;
                     if (showIntermediary && !child.intermediaryName.empty()) {
                         childDisplay += " [" + child.intermediaryName + "]";
+                    }
+                    if (showObf && !child.obfName.empty()) {
+                        childDisplay += " [" + child.obfName + "]";
                     }
                     if (showSrg && !child.srgName.empty()) {
                         childDisplay += " [" + child.srgName + "]";
@@ -1496,6 +1533,7 @@ void AppState::renderClassDetails(int entryIndex) {
     const auto& ci = entry.classInfo;
 
     const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNamesRight);
+    const bool showObfRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowObfNamesRight);
     const bool showSrgRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNamesRight);
 
     // Class Info Table with animation
@@ -1516,9 +1554,11 @@ void AppState::renderClassDetails(int entryIndex) {
             ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
             ImGui::TableNextColumn(); CopyableText(ci.deobfClass.c_str());
 
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Official");
-            ImGui::TableNextColumn(); CopyableText(ci.obfClass.c_str());
+            if (showObfRight) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("Official");
+                ImGui::TableNextColumn(); CopyableText(ci.obfClass.c_str());
+            }
 
             if (showSrgRight && ci.srgClass) {
                 ImGui::TableNextRow();
@@ -1552,11 +1592,12 @@ void AppState::renderClassDetails(int entryIndex) {
         ImGui::Text("Methods (%zu)", entry.methods.size());
         ImGui::Separator();
 
-        if (ImGui::BeginTable("Methods", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+        int numMethodCols = 1 + (showObfRight ? 1 : 0) + (showIntermediaryRight ? 1 : 0) + (showSrgRight ? 1 : 0) + 1;
+        if (ImGui::BeginTable("Methods", numMethodCols, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
                               ImVec2(0, 150)))
         {
             ImGui::TableSetupColumn("Deobf");
-            ImGui::TableSetupColumn("Official");
+            if (showObfRight) ImGui::TableSetupColumn("Official");
             if (showIntermediaryRight) ImGui::TableSetupColumn("Intermediary");
             if (showSrgRight) ImGui::TableSetupColumn("SRG");
             ImGui::TableSetupColumn("Descriptor");
@@ -1572,7 +1613,9 @@ void AppState::renderClassDetails(int entryIndex) {
                     }
                 };
                 ImGui::TableNextColumn(); CopyableText(m.deobfName.c_str()); navToMethod();
-                ImGui::TableNextColumn(); CopyableText(m.obfName.c_str()); navToMethod();
+                if (showObfRight) {
+                    ImGui::TableNextColumn(); CopyableText(m.obfName.c_str()); navToMethod();
+                }
                 if (showIntermediaryRight) {
                     ImGui::TableNextColumn();
                     if (m.intermediaryName) {
@@ -1613,11 +1656,12 @@ void AppState::renderClassDetails(int entryIndex) {
         ImGui::Text("Fields (%zu)", entry.fields.size());
         ImGui::Separator();
 
-        if (ImGui::BeginTable("Fields", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+        int numFieldCols = 1 + (showObfRight ? 1 : 0) + (showIntermediaryRight ? 1 : 0) + (showSrgRight ? 1 : 0) + 1;
+        if (ImGui::BeginTable("Fields", numFieldCols, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
                               ImVec2(0, 150)))
         {
             ImGui::TableSetupColumn("Deobf");
-            ImGui::TableSetupColumn("Official");
+            if (showObfRight) ImGui::TableSetupColumn("Official");
             if (showIntermediaryRight) ImGui::TableSetupColumn("Intermediary");
             if (showSrgRight) ImGui::TableSetupColumn("SRG");
             ImGui::TableSetupColumn("Type");
@@ -1633,7 +1677,9 @@ void AppState::renderClassDetails(int entryIndex) {
                     }
                 };
                 ImGui::TableNextColumn(); CopyableText(f.deobfName.c_str()); navToField();
-                ImGui::TableNextColumn(); CopyableText(f.obfName.c_str()); navToField();
+                if (showObfRight) {
+                    ImGui::TableNextColumn(); CopyableText(f.obfName.c_str()); navToField();
+                }
                 if (showIntermediaryRight) {
                     ImGui::TableNextColumn();
                     if (f.intermediaryName) {
@@ -1667,6 +1713,7 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex) {
     const auto& m = entry.methods[memberIndex];
 
     const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNamesRight);
+    const bool showObfRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowObfNamesRight);
     const bool showSrgRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNamesRight);
 
     float alpha = methodInfoAnim_;
@@ -1685,9 +1732,11 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex) {
             ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
             ImGui::TableNextColumn(); CopyableText(m.deobfName.c_str());
 
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Official");
-            ImGui::TableNextColumn(); CopyableText(m.obfName.c_str());
+            if (showObfRight) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("Official");
+                ImGui::TableNextColumn(); CopyableText(m.obfName.c_str());
+            }
 
             ImGui::TableNextRow();
             ImGui::TableNextColumn(); ImGui::Text("Descriptor");
@@ -1754,6 +1803,7 @@ void AppState::renderFieldDetails(int entryIndex, int memberIndex) {
     const auto& f = entry.fields[memberIndex];
 
     const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNamesRight);
+    const bool showObfRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowObfNamesRight);
     const bool showSrgRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNamesRight);
 
     float alpha = fieldInfoAnim_;
@@ -1772,9 +1822,11 @@ void AppState::renderFieldDetails(int entryIndex, int memberIndex) {
             ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
             ImGui::TableNextColumn(); CopyableText(f.deobfName.c_str());
 
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Official");
-            ImGui::TableNextColumn(); CopyableText(f.obfName.c_str());
+            if (showObfRight) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("Official");
+                ImGui::TableNextColumn(); CopyableText(f.obfName.c_str());
+            }
 
             ImGui::TableNextRow();
             ImGui::TableNextColumn(); ImGui::Text("Type");

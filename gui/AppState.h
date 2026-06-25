@@ -19,6 +19,7 @@ struct TreeNode {
     enum Type { Root, Directory, ClassEntry, Method, Field };
     Type type = Root;
     std::string name;
+    std::string obfName;
     std::string intermediaryName;
     std::string srgName;
     std::string displayPath;
