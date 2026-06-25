@@ -12,6 +12,7 @@
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
 #include "gui/AppState.h"
+#include "gui/config/Settings.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -234,6 +235,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     AppState appState;
     appState.setHwnd(hwnd);
 
+    mcobfF::Settings::instance().applyThemeIfNeeded();
+
     MSG msg = {};
     while (msg.message != WM_QUIT) {
         if (PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE)) {
@@ -249,7 +252,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         appState.renderGui();
 
         ImGui::Render();
-        const FLOAT clearColor[4] = { 0.11f, 0.12f, 0.14f, 1.0f };
+        const auto theme = mcobfF::Settings::instance().getEffectiveTheme();
+        const FLOAT darkClear[4] = { 0.11f, 0.12f, 0.14f, 1.0f };
+        const FLOAT lightClear[4] = { 0.94f, 0.94f, 0.95f, 1.0f };
+        const FLOAT* clearColor = (theme == mcobfF::Theme::Light) ? lightClear : darkClear;
         g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
         g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clearColor);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());

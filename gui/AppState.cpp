@@ -4,11 +4,13 @@
 #include "mcobfF/mapping/MappingData.h"
 #include "mcobfF/file/FileSystem.h"
 #include "mcobfF/dumper/JarDumper.h"
+#include "config/Settings.h"
 
 #include <windows.h>
 #include <commdlg.h>
 #include <filesystem>
 #include <imgui.h>
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
 #include <future>
@@ -19,16 +21,29 @@
 AppState::AppState() {
     cacheDir_ = mcobfF::JarDumper::getDefaultCacheDir();
     mcobfF::JarDumper::setCacheDir(cacheDir_);
+    if (const char* localAppData = std::getenv("LOCALAPPDATA")) {
+        configPath_ = std::string(localAppData) + "\\mcobfF\\config.json";
+    }
+    mcobfF::Settings::instance().load(configPath_);
     startFetchManifest();
 }
 
-AppState::~AppState() = default;
+AppState::~AppState() {
+    mcobfF::Settings::instance().save(configPath_);
+}
 
 void AppState::setHwnd(HWND hwnd) {
     hwnd_ = hwnd;
 }
 
 void AppState::update() {
+    mcobfF::Settings::instance().applyThemeIfNeeded();
+
+    if (mcobfF::Settings::instance().isDirty()) {
+        displayListDirty_ = true;
+        mcobfF::Settings::instance().clearDirty();
+    }
+
     if (manifestFuture_.valid()) {
         if (manifestFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             manifestFuture_.get();
@@ -66,6 +81,8 @@ void AppState::update() {
     updateAnimations(deltaTime);
 }
 
+
+
 float AppState::easeOutCubic(float t) {
     // Smooth easing function: starts fast, slows down at the end
     if (t < 0.0f) t = 0.0f;
@@ -87,7 +104,7 @@ float AppState::easeInOutCubic(float t) {
 }
 
 void AppState::updateAnimations(float deltaTime) {
-    const float animDuration = animDuration_; // Use configurable duration
+    const float animDuration = mcobfF::Settings::instance().get<float>(mcobfF::SettingKey::AnimationDuration);
     const float animSpeed = 1.0f / animDuration;
     
     // Helper lambda for smooth linear time-based animation
@@ -549,9 +566,14 @@ void AppState::renderTitleBar() {
     const ImU32 col = IM_COL32(235, 235, 235, 255);
     const ImU32 colHover = IM_COL32(100, 125, 160, 255);
 
+    const bool isLightTheme = mcobfF::Settings::instance().getEffectiveTheme() == mcobfF::Theme::Light;
+    const ImVec4 titleBarBg = isLightTheme ? ImVec4(0.82f, 0.83f, 0.86f, 1.0f) : ImVec4(0.08f, 0.09f, 0.11f, 1.0f);
+    const ImVec4 titleBarText = isLightTheme ? ImVec4(0.10f, 0.10f, 0.10f, 1.0f) : ImVec4(0.92f, 0.92f, 0.92f, 1.0f);
+
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, titleBarBg);
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetIO().DisplaySize.x, titleBarHeight));
@@ -628,6 +650,7 @@ void AppState::renderTitleBar() {
 
     ImGui::SetCursorPos(ImVec2(8, 0));
     ImGui::SetCursorPosY((titleBarHeight - ImGui::GetFontSize()) * 0.5f);
+    ImGui::PushStyleColor(ImGuiCol_Text, titleBarText);
     ImGui::Text("MC-OBF-Find");
 
     if (loaded_) {
@@ -635,8 +658,10 @@ void AppState::renderTitleBar() {
         ImGui::SetCursorPosY((titleBarHeight - ImGui::GetFontSize()) * 0.5f);
         ImGui::TextDisabled("  |  %s", selectedVersion_.c_str());
     }
+    ImGui::PopStyleColor();
 
     ImGui::End();
+    ImGui::PopStyleColor();
     ImGui::PopStyleVar(3);
 }
 
@@ -700,17 +725,19 @@ void AppState::renderVersionSelector() {
 void AppState::renderSettingsWindow() {
     ImGui::Text("Settings");
     ImGui::Separator();
-
     ImGui::Spacing();
-    ImGui::Text("Animation");
-    ImGui::SliderFloat("Duration", &animDuration_, 0.05f, 1.0f, "%.2f s");
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Duration of UI animations in seconds");
-    }
+
+    mcobfF::Settings::instance().renderAll();
 
     ImGui::Spacing();
     ImGui::Separator();
+
+    if (ImGui::Button("Reset to Defaults")) {
+        mcobfF::Settings::instance().resetToDefaults();
+    }
+    ImGui::SameLine();
     if (ImGui::Button("Back")) {
+        mcobfF::Settings::instance().save(configPath_);
         settingsOpen_ = false;
     }
 }
@@ -1174,16 +1201,19 @@ void AppState::flattenTree(std::vector<FlatNode>& out, const TreeNode& node, int
 }
 
 std::string AppState::buildDisplayName(const TreeNode& node) {
+    const bool showIntermediary = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNames);
+    const bool showSrg = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNames);
+
     std::string name = node.name;
     if (node.type == TreeNode::ClassEntry) {
-        if (!node.intermediaryName.empty())
+        if (showIntermediary && !node.intermediaryName.empty())
             name += " [" + node.intermediaryName + "]";
-        if (!node.srgName.empty())
+        if (showSrg && !node.srgName.empty())
             name += " [" + node.srgName + "]";
     } else if (node.type == TreeNode::Method) {
         std::string suffix;
-        if (!node.intermediaryName.empty()) suffix += " [" + node.intermediaryName + "]";
-        if (!node.srgName.empty()) suffix += " [" + node.srgName + "]";
+        if (showIntermediary && !node.intermediaryName.empty()) suffix += " [" + node.intermediaryName + "]";
+        if (showSrg && !node.srgName.empty()) suffix += " [" + node.srgName + "]";
         if (!suffix.empty()) {
             size_t pos = name.rfind("(...)");
             if (pos != std::string::npos)
@@ -1192,8 +1222,8 @@ std::string AppState::buildDisplayName(const TreeNode& node) {
                 name += suffix;
         }
     } else if (node.type == TreeNode::Field) {
-        if (!node.intermediaryName.empty()) name += " [" + node.intermediaryName + "]";
-        if (!node.srgName.empty()) name += " [" + node.srgName + "]";
+        if (showIntermediary && !node.intermediaryName.empty()) name += " [" + node.intermediaryName + "]";
+        if (showSrg && !node.srgName.empty()) name += " [" + node.srgName + "]";
     }
     return name;
 }
@@ -1237,6 +1267,9 @@ bool AppState::treeNodeMatchesFilter(const TreeNode& node, const std::string& cl
 }
 
 void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, const std::string& memberFilter, bool filtering) {
+    const bool showIntermediary = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNames);
+    const bool showSrg = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNames);
+
     auto matchesFilter = [](const std::string& str, const std::string& filter) -> bool {
         if (filter.empty()) return true;
         std::string lower = str;
@@ -1320,10 +1353,10 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
         if (!visible) return;
 
         std::string displayName = node.name;
-        if (!node.intermediaryName.empty()) {
+        if (showIntermediary && !node.intermediaryName.empty()) {
             displayName += " [" + node.intermediaryName + "]";
         }
-        if (!node.srgName.empty()) {
+        if (showSrg && !node.srgName.empty()) {
             displayName += " [" + node.srgName + "]";
         }
 
@@ -1367,10 +1400,10 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
                 if (child.type == TreeNode::Method) {
                     std::string childDisplay = child.name;
                     std::string suffix;
-                    if (!child.intermediaryName.empty()) {
+                    if (showIntermediary && !child.intermediaryName.empty()) {
                         suffix += " [" + child.intermediaryName + "]";
                     }
-                    if (!child.srgName.empty()) {
+                    if (showSrg && !child.srgName.empty()) {
                         suffix += " [" + child.srgName + "]";
                     }
                     if (!suffix.empty()) {
@@ -1392,10 +1425,10 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
                     }
                 } else if (child.type == TreeNode::Field) {
                     std::string childDisplay = child.name;
-                    if (!child.intermediaryName.empty()) {
+                    if (showIntermediary && !child.intermediaryName.empty()) {
                         childDisplay += " [" + child.intermediaryName + "]";
                     }
-                    if (!child.srgName.empty()) {
+                    if (showSrg && !child.srgName.empty()) {
                         childDisplay += " [" + child.srgName + "]";
                     }
                     bool sel = selection_.type == Selection::Field &&
@@ -1462,6 +1495,9 @@ void AppState::renderClassDetails(int entryIndex) {
     const auto& entry = api_->getMappingData().entries[entryIndex];
     const auto& ci = entry.classInfo;
 
+    const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNamesRight);
+    const bool showSrgRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNamesRight);
+
     // Class Info Table with animation
     float alpha = classInfoAnim_;
     if (alpha > 0.001f) {
@@ -1484,13 +1520,13 @@ void AppState::renderClassDetails(int entryIndex) {
             ImGui::TableNextColumn(); ImGui::Text("Official");
             ImGui::TableNextColumn(); CopyableText(ci.obfClass.c_str());
 
-            if (ci.srgClass) {
+            if (showSrgRight && ci.srgClass) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn(); ImGui::Text("SRG");
                 ImGui::TableNextColumn(); CopyableText(ci.srgClass->c_str());
             }
 
-            if (ci.intermediaryClass) {
+            if (showIntermediaryRight && ci.intermediaryClass) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn(); ImGui::Text("Intermediary");
                 ImGui::TableNextColumn(); CopyableText(ci.intermediaryClass->c_str());
@@ -1521,8 +1557,8 @@ void AppState::renderClassDetails(int entryIndex) {
         {
             ImGui::TableSetupColumn("Deobf");
             ImGui::TableSetupColumn("Official");
-            ImGui::TableSetupColumn("Intermediary");
-            ImGui::TableSetupColumn("SRG");
+            if (showIntermediaryRight) ImGui::TableSetupColumn("Intermediary");
+            if (showSrgRight) ImGui::TableSetupColumn("SRG");
             ImGui::TableSetupColumn("Descriptor");
             ImGui::TableHeadersRow();
 
@@ -1537,20 +1573,24 @@ void AppState::renderClassDetails(int entryIndex) {
                 };
                 ImGui::TableNextColumn(); CopyableText(m.deobfName.c_str()); navToMethod();
                 ImGui::TableNextColumn(); CopyableText(m.obfName.c_str()); navToMethod();
-                ImGui::TableNextColumn();
-                if (m.intermediaryName) {
-                    CopyableText(m.intermediaryName->c_str());
-                } else {
-                    ImGui::TextDisabled("-");
+                if (showIntermediaryRight) {
+                    ImGui::TableNextColumn();
+                    if (m.intermediaryName) {
+                        CopyableText(m.intermediaryName->c_str());
+                    } else {
+                        ImGui::TextDisabled("-");
+                    }
+                    navToMethod();
                 }
-                navToMethod();
-                ImGui::TableNextColumn();
-                if (m.srgName) {
-                    CopyableText(m.srgName->c_str());
-                } else {
-                    ImGui::TextDisabled("-");
+                if (showSrgRight) {
+                    ImGui::TableNextColumn();
+                    if (m.srgName) {
+                        CopyableText(m.srgName->c_str());
+                    } else {
+                        ImGui::TextDisabled("-");
+                    }
+                    navToMethod();
                 }
-                navToMethod();
                 ImGui::TableNextColumn(); CopyableText(m.jvmDescriptor.c_str()); navToMethod();
             }
             ImGui::EndTable();
@@ -1578,8 +1618,8 @@ void AppState::renderClassDetails(int entryIndex) {
         {
             ImGui::TableSetupColumn("Deobf");
             ImGui::TableSetupColumn("Official");
-            ImGui::TableSetupColumn("Intermediary");
-            ImGui::TableSetupColumn("SRG");
+            if (showIntermediaryRight) ImGui::TableSetupColumn("Intermediary");
+            if (showSrgRight) ImGui::TableSetupColumn("SRG");
             ImGui::TableSetupColumn("Type");
             ImGui::TableHeadersRow();
 
@@ -1594,20 +1634,24 @@ void AppState::renderClassDetails(int entryIndex) {
                 };
                 ImGui::TableNextColumn(); CopyableText(f.deobfName.c_str()); navToField();
                 ImGui::TableNextColumn(); CopyableText(f.obfName.c_str()); navToField();
-                ImGui::TableNextColumn();
-                if (f.intermediaryName) {
-                    CopyableText(f.intermediaryName->c_str());
-                } else {
-                    ImGui::TextDisabled("-");
+                if (showIntermediaryRight) {
+                    ImGui::TableNextColumn();
+                    if (f.intermediaryName) {
+                        CopyableText(f.intermediaryName->c_str());
+                    } else {
+                        ImGui::TextDisabled("-");
+                    }
+                    navToField();
                 }
-                navToField();
-                ImGui::TableNextColumn();
-                if (f.srgName) {
-                    CopyableText(f.srgName->c_str());
-                } else {
-                    ImGui::TextDisabled("-");
+                if (showSrgRight) {
+                    ImGui::TableNextColumn();
+                    if (f.srgName) {
+                        CopyableText(f.srgName->c_str());
+                    } else {
+                        ImGui::TextDisabled("-");
+                    }
+                    navToField();
                 }
-                navToField();
                 ImGui::TableNextColumn(); CopyableText(f.type.c_str()); navToField();
             }
             ImGui::EndTable();
@@ -1621,6 +1665,9 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex) {
     const auto& entry = api_->getMappingData().entries[entryIndex];
     if (memberIndex < 0 || memberIndex >= (int)entry.methods.size()) return;
     const auto& m = entry.methods[memberIndex];
+
+    const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNamesRight);
+    const bool showSrgRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNamesRight);
 
     float alpha = methodInfoAnim_;
     if (alpha > 0.001f) {
@@ -1661,13 +1708,13 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex) {
                 ImGui::TableNextColumn(); CopyableText(params.c_str());
             }
 
-            if (m.srgName) {
+            if (showSrgRight && m.srgName) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn(); ImGui::Text("SRG");
                 ImGui::TableNextColumn(); CopyableText(m.srgName->c_str());
             }
 
-            if (m.intermediaryName) {
+            if (showIntermediaryRight && m.intermediaryName) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn(); ImGui::Text("Intermediary");
                 ImGui::TableNextColumn(); CopyableText(m.intermediaryName->c_str());
@@ -1706,6 +1753,9 @@ void AppState::renderFieldDetails(int entryIndex, int memberIndex) {
     if (memberIndex < 0 || memberIndex >= (int)entry.fields.size()) return;
     const auto& f = entry.fields[memberIndex];
 
+    const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNamesRight);
+    const bool showSrgRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNamesRight);
+
     float alpha = fieldInfoAnim_;
     if (alpha > 0.001f) {
         float easedAlpha = easeOutCubic(alpha);
@@ -1730,13 +1780,13 @@ void AppState::renderFieldDetails(int entryIndex, int memberIndex) {
             ImGui::TableNextColumn(); ImGui::Text("Type");
             ImGui::TableNextColumn(); CopyableText(f.type.c_str());
 
-            if (f.srgName) {
+            if (showSrgRight && f.srgName) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn(); ImGui::Text("SRG");
                 ImGui::TableNextColumn(); CopyableText(f.srgName->c_str());
             }
 
-            if (f.intermediaryName) {
+            if (showIntermediaryRight && f.intermediaryName) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn(); ImGui::Text("Intermediary");
                 ImGui::TableNextColumn(); CopyableText(f.intermediaryName->c_str());

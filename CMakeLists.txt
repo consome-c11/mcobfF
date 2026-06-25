@@ -29,6 +29,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(imgui)
 
+# magic_enum
+FetchContent_Declare(
+        magic_enum
+        GIT_REPOSITORY https://github.com/Neargye/magic_enum.git
+        GIT_TAG v0.9.7
+)
+FetchContent_MakeAvailable(magic_enum)
+
 set(IMGUI_SOURCES
         ${imgui_SOURCE_DIR}/imgui.cpp
         ${imgui_SOURCE_DIR}/imgui_demo.cpp
@@ -74,7 +82,9 @@ add_executable(${PROJECT_NAME} ${SOURCES} ${IMGUI_SOURCES}
         mcobfF/zip/ZipArchive.h
         mcobfF/zip/ZipArchive.cpp
         mcobfF/api/api.h
-        mcobfF/api/api.cpp)
+        mcobfF/api/api.cpp
+        gui/config/Settings.h
+        gui/config/Settings.cpp)
 
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /W4)
@@ -84,4 +94,4 @@ else()
 endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE "/" mcobfF mcobfF/api mcobfF/dumper gui ${miniz_SOURCE_DIR} ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json miniz winhttp d3d11 d3dcompiler dwmapi comdlg32)
+target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json miniz magic_enum::magic_enum winhttp d3d11 d3dcompiler dwmapi comdlg32)

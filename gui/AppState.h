@@ -5,6 +5,7 @@
 #include <future>
 #include <set>
 #include <map>
+#include "config/Settings.h"
 
 struct HWND__;
 using HWND = HWND__*;
@@ -98,6 +99,7 @@ private:
 
     std::unique_ptr<mcobfF::api> api_;
     std::string cacheDir_;
+    std::string configPath_;
 
     TreeNode treeRoot_;
     char classFilter_[256] = {};
@@ -132,8 +134,6 @@ private:
     std::map<std::string, float> nodeAnimTargets_; // Target state (0.0 = closed, 1.0 = open)
     std::map<std::string, float> parentBottomY_; // Track parent node bottom Y for clipping
     std::map<std::string, int> closingDescendantCount_; // Visible descendant count when closing started
-
-    float animDuration_ = 0.3f; // Animation duration in seconds (configurable)
 
     int lastEntryIndex_ = -1;
     Selection::Type lastSelectionType_ = Selection::None;
