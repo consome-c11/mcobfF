@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 project(mcobfF)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -37,6 +37,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(magic_enum)
 
+# JNIHook
+FetchContent_Declare(
+        jnihook
+        GIT_REPOSITORY https://github.com/rdbo/jnihook.git
+        GIT_TAG 2.2
+)
+FetchContent_MakeAvailable(jnihook)
+
 set(IMGUI_SOURCES
         ${imgui_SOURCE_DIR}/imgui.cpp
         ${imgui_SOURCE_DIR}/imgui_demo.cpp
@@ -65,6 +73,8 @@ add_executable(${PROJECT_NAME} ${SOURCES} ${IMGUI_SOURCES}
         mcobfF/mapping/InheritanceResolver.cpp
         mcobfF/mapping/MappingData.h
         mcobfF/mapping/MappingData.cpp
+        mcobfF/mapping/MappingWriter.h
+        mcobfF/mapping/MappingWriter.cpp
         mcobfF/mapping/MojMapParser.h
         mcobfF/mapping/MojMapParser.cpp
         mcobfF/mapping/MappingResolver.h
@@ -83,15 +93,41 @@ add_executable(${PROJECT_NAME} ${SOURCES} ${IMGUI_SOURCES}
         mcobfF/zip/ZipArchive.cpp
         mcobfF/api/api.h
         mcobfF/api/api.cpp
+        mcobfF/decompiler/FernflowerDecompiler.h
+        mcobfF/decompiler/FernflowerDecompiler.cpp
+
+        mcobfF/decompiler/JavaMethodParser.h
+        mcobfF/decompiler/JavaMethodParser.cpp
         gui/config/Settings.h
         gui/config/Settings.cpp)
 
-if(MSVC)
+if (MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /W4)
     set_target_properties(${PROJECT_NAME} PROPERTIES LINK_FLAGS "/SUBSYSTEM:WINDOWS")
-else()
+else ()
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+endif ()
 
-target_include_directories(${PROJECT_NAME} PRIVATE "/" mcobfF mcobfF/api mcobfF/dumper gui ${miniz_SOURCE_DIR} ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json miniz magic_enum::magic_enum winhttp d3d11 d3dcompiler dwmapi comdlg32)
+# Find JNI (requires JAVA_HOME to be set)
+set(JAVA_HOME "$ENV{JAVA_HOME}")
+if (JAVA_HOME)
+    file(TO_CMAKE_PATH "$ENV{JAVA_HOME}" JAVA_HOME)
+endif ()
+
+if (JAVA_HOME AND EXISTS "${JAVA_HOME}/include/jni.h")
+    set(JAVA_INCLUDES "${JAVA_HOME}/include")
+    if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        list(APPEND JAVA_INCLUDES "${JAVA_HOME}/include/win32")
+        set(JAVA_LIB_DIRS "${JAVA_HOME}/lib" "${JAVA_HOME}/lib/server")
+    else ()
+        list(APPEND JAVA_INCLUDES "${JAVA_HOME}/include/linux")
+        set(JAVA_LIB_DIRS "${JAVA_HOME}/lib" "${JAVA_HOME}/lib/server" "${JAVA_HOME}/jre/lib/amd64/server")
+    endif ()
+    message(STATUS "Found JNI at ${JAVA_HOME}")
+else ()
+    message(WARNING "JAVA_HOME not set or invalid - JNI/JNIHook will not be available")
+endif ()
+
+target_include_directories(${PROJECT_NAME} PRIVATE "/" mcobfF mcobfF/api mcobfF/dumper gui ${miniz_SOURCE_DIR} ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${JAVA_INCLUDES} ${jnihook_SOURCE_DIR}/include)
+target_link_directories(${PROJECT_NAME} PRIVATE ${JAVA_LIB_DIRS})
+target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json miniz magic_enum::magic_enum jnihooksingle winhttp d3d11 d3dcompiler dwmapi comdlg32)

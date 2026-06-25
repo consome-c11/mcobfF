@@ -1,6 +1,8 @@
 #include "MappingResolver.h"
 #include "MojMapParser.h"
 #include "TinyMappingParser.h"
+#include "SRGResolver.h"
+#include "SRGParser.h"
 #include <algorithm>
 
 #include "mcobfF/Logger.h"
@@ -49,11 +51,26 @@ namespace mcobfF
 
     bool MappingResolver::loadMappings(const std::string& version)
     {
-        bool result = loadFromCache(version) || downloadAndParseMappings(version);
+        isPreMojmap_ = SRGResolver::isVersionPreMojmap(version);
+
+        bool result;
+        if (isPreMojmap_)
+        {
+            Logger::info("MappingResolver") << "Version " << version << " is pre-mojmap, using MCP SRG mappings";
+            result = loadMcpMappings(version);
+        }
+        else
+        {
+            result = loadFromCache(version) || downloadAndParseMappings(version);
+        }
+
         if (result)
         {
             currentVersion_ = version;
-            loadIntermediaryMappings(version);
+            if (!isPreMojmap_)
+            {
+                loadIntermediaryMappings(version);
+            }
         }
         return result;
     }
@@ -129,6 +146,26 @@ namespace mcobfF
         currentVersion_ = version;
         Logger::info("MappingResolver") << "Initialization complete for version: " << version;
         return true;
+    }
+
+    bool MappingResolver::loadMcpMappings(const std::string& version)
+    {
+        std::string cacheFile = (fs::path(getCachePath(version)) / "mcp-srg.tsrg").string();
+
+        if (FileSystem::fileExists(cacheFile))
+        {
+            if (auto cached = FileSystem::readFile(cacheFile); cached && !cached->empty())
+            {
+                Logger::info("MappingResolver") << "Loading MCP SRG from cache: " << cacheFile;
+                if (SRGParser::parseStandalone(*cached, mappings_))
+                {
+                    currentVersion_ = version;
+                    return true;
+                }
+            }
+        }
+
+        return SRGResolver::downloadAndLoadStandalone(version, getCachePath(version), mappings_);
     }
 
     std::string MappingResolver::getCachePath(const std::string& version) const

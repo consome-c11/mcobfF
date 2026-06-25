@@ -153,7 +153,8 @@ namespace mcobfF
         if (!readU4(classFileStream, magic) || magic != CLASS_FILE_MAGIC) return std::nullopt;
 
         uint16_t minor, major, cpCount;
-        if (!readU2(classFileStream, minor) || !readU2(classFileStream, major) || !readU2(classFileStream, cpCount)) return std::nullopt;
+        if (!readU2(classFileStream, minor) || !readU2(classFileStream, major) || !readU2(classFileStream, cpCount))
+            return std::nullopt;
 
         std::vector<ConstantPoolEntry> cp(cpCount);
         for (uint16_t i = 1; i < cpCount; ++i)
@@ -163,7 +164,8 @@ namespace mcobfF
         }
 
         uint16_t accessFlags, thisClass, superClass;
-        if (!readU2(classFileStream, accessFlags) || !readU2(classFileStream, thisClass) || !readU2(classFileStream, superClass)) return std::nullopt;
+        if (!readU2(classFileStream, accessFlags) || !readU2(classFileStream, thisClass) || !readU2(
+            classFileStream, superClass)) return std::nullopt;
 
         if (thisClass < 1 || thisClass >= cpCount || cp[thisClass].tag != 7) return std::nullopt;
 

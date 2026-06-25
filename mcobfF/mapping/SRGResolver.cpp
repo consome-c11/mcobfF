@@ -61,17 +61,17 @@ namespace mcobfF
         return SRGParser::parse(buffer.str(), mappings);
     }
 
-    bool SRGResolver::isVersionAtLeast1122(const std::string& version)
+    bool SRGResolver::isVersionPreMojmap(const std::string& version)
     {
-        if (version.find('w') != std::string::npos) return true;
-        if (!version.starts_with("1.")) return version.starts_with("2.") || version.starts_with("3.");
+        if (version.find("w") != std::string::npos) return false;
+        if (!version.starts_with("1.")) return false;
         std::string afterPrefix = version.substr(2);
         const size_t dot = afterPrefix.find('.');
         const std::string minorStr = (dot == std::string::npos) ? afterPrefix : afterPrefix.substr(0, dot);
         try
         {
             const int minor = std::stoi(minorStr);
-            return minor >= 12;
+            return minor <= 13;
         }
         catch (...)
         {
@@ -81,6 +81,12 @@ namespace mcobfF
 
     std::string SRGResolver::convertJoinedSrgToTsrg(const std::string& content)
     {
+        MappingData dummy;
+        if (SRGParser::parseStandalone(content, dummy))
+        {
+            return content;
+        }
+
         std::istringstream stream(content);
         std::string line;
         std::ostringstream result;
@@ -178,9 +184,8 @@ namespace mcobfF
         }
 
         std::string tsrgContent;
-        bool is1122Plus = isVersionAtLeast1122(version);
 
-        if (is1122Plus)
+        if (!isVersionPreMojmap(version))
         {
             std::string url = std::string(ApiConfig::FORGE_MCPCONFIG_RAW) + "/" + version + "/joined.tsrg";
             Logger::info("SRGResolver") << "Downloading SRG from: " << url;
@@ -199,13 +204,29 @@ namespace mcobfF
 
         if (tsrgContent.empty())
         {
-            std::string zipUrl = std::string(ApiConfig::FORGE_MAVEN) + "/" + version + "/mcp-" + version + "-srg.zip";
+            std::string zipUrl;
+            if (isVersionPreMojmap(version))
+            {
+                zipUrl = std::string(ApiConfig::MCPBOT_BASE) + "/" + version + "/mcp-" + version + "-srg.zip";
+            }
+            else
+            {
+                zipUrl = std::string(ApiConfig::FORGE_MAVEN) + "/" + version + "/mcp-" + version + "-srg.zip";
+            }
+
             std::string zipPath = (cachePath / "mcp-srg.zip").string();
             Logger::info("SRGResolver") << "Downloading MCP SRG zip from: " << zipUrl;
 
             if (!HttpsClient::downloadToFile(zipUrl, zipPath))
             {
-                Logger::error("SRGResolver") << "Failed to download MCP SRG zip.";
+                if (isVersionPreMojmap(version))
+                {
+                    Logger::error("SRGResolver") << "Failed to download MCP SRG zip from MCPBot.";
+                }
+                else
+                {
+                    Logger::error("SRGResolver") << "Failed to download MCP SRG zip.";
+                }
                 return false;
             }
 
@@ -223,15 +244,19 @@ namespace mcobfF
             }
             else
             {
-                idx = zip.locateFile("joined.srg");
-                if (idx >= 0)
+                for (const auto& filename : {"joined.srg", "joined.csrg", "srg/joined.srg"})
                 {
-                    auto data = zip.extractToMemory(idx);
-                    if (data)
+                    idx = zip.locateFile(filename);
+                    if (idx >= 0)
                     {
-                        std::string srgContent(data->data(), data->size());
-                        tsrgContent = convertJoinedSrgToTsrg(srgContent);
-                        Logger::info("SRGResolver") << "Converted old SRG format to TSRG.";
+                        auto data = zip.extractToMemory(idx);
+                        if (data)
+                        {
+                            std::string srgContent(data->data(), data->size());
+                            tsrgContent = convertJoinedSrgToTsrg(srgContent);
+                            Logger::info("SRGResolver") << "Converted old SRG format to TSRG.";
+                            break;
+                        }
                     }
                 }
             }
@@ -250,5 +275,82 @@ namespace mcobfF
         FileSystem::writeFile(cacheFile, tsrgContent);
 
         return SRGParser::parse(tsrgContent, mappings);
+    }
+
+    bool SRGResolver::downloadAndLoadStandalone(const std::string& version, const std::string& cacheDir,
+                                                MappingData& mappings)
+    {
+        auto cachePath = fs::path(cacheDir);
+        std::string cacheFile = (cachePath / "mcp-srg.tsrg").string();
+
+        if (FileSystem::fileExists(cacheFile))
+        {
+            if (auto cached = FileSystem::readFile(cacheFile); cached && !cached->empty())
+            {
+                Logger::info("SRGResolver") << "Loading MCP SRG from cache: " << cacheFile;
+                return SRGParser::parseStandalone(*cached, mappings);
+            }
+        }
+
+        if (!isVersionPreMojmap(version))
+        {
+            return downloadAndLoad(version, cacheDir, mappings);
+        }
+
+        std::string zipUrl = std::string(ApiConfig::MCPBOT_BASE) + "/" + version + "/mcp-" + version + "-srg.zip";
+        std::string zipPath = (cachePath / "mcp-srg.zip").string();
+        Logger::info("SRGResolver") << "Downloading MCP SRG zip from MCPBot: " << zipUrl;
+
+        if (!FileSystem::fileExists(cachePath.string()))
+        {
+            FileSystem::createDirectories(cachePath.string());
+        }
+
+        if (!FileSystem::fileExists(zipPath))
+        {
+            if (!HttpsClient::downloadToFile(zipUrl, zipPath))
+            {
+                Logger::error("SRGResolver") << "Failed to download MCP SRG zip from: " << zipUrl;
+                return false;
+            }
+        }
+        else
+        {
+            Logger::info("SRGResolver") << "Using cached MCP SRG zip: " << zipPath;
+        }
+
+        ZipArchive zip;
+        if (!zip.open(zipPath))
+        {
+            Logger::error("SRGResolver") << "Failed to open MCP SRG zip.";
+            return false;
+        }
+
+        std::string srgContent;
+
+        for (const auto& filename : {"joined.srg", "joined.tsrg", "joined.csrg", "srg/joined.srg"})
+        {
+            int idx = zip.locateFile(filename);
+            if (idx >= 0)
+            {
+                auto data = zip.extractToMemory(idx);
+                if (data)
+                {
+                    srgContent.assign(data->data(), data->size());
+                    Logger::info("SRGResolver") << "Extracted " << filename << " from MCP SRG zip.";
+                    break;
+                }
+            }
+        }
+
+        if (srgContent.empty())
+        {
+            Logger::error("SRGResolver") << "No SRG/TSRG file found in MCP SRG zip.";
+            return false;
+        }
+
+        FileSystem::writeFile(cacheFile, srgContent);
+
+        return SRGParser::parseStandalone(srgContent, mappings);
     }
 } // namespace mc

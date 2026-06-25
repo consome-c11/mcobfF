@@ -37,15 +37,18 @@ namespace mcobfF
         [[nodiscard]] MappingData& getData() { return mappings_; }
         [[nodiscard]] bool isLoaded() const { return !mappings_.entries.empty(); }
         [[nodiscard]] std::string getCachePath(const std::string& version) const;
+        [[nodiscard]] bool isPreMojmap() const { return isPreMojmap_; }
 
     private:
         [[nodiscard]] bool loadFromCache(const std::string& version);
         [[nodiscard]] bool downloadAndParseMappings(const std::string& version);
         [[nodiscard]] bool loadIntermediaryMappings(const std::string& version);
+        [[nodiscard]] bool loadMcpMappings(const std::string& version);
         [[nodiscard]] static std::string normalizeClassName(const std::string& name);
 
         std::string cacheBasePath_;
         MappingData mappings_;
         std::string currentVersion_;
+        bool isPreMojmap_ = false;
     };
 } // namespace mc

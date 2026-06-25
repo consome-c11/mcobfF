@@ -7,89 +7,95 @@
 #include <magic_enum/magic_enum.hpp>
 #include <nlohmann/json.hpp>
 
-namespace mcobfF {
+namespace mcobfF
+{
+    // Add new setting keys here
+    enum class SettingKey
+    {
+        AnimationDuration,
+        ShowIntermediaryNames,
+        ShowObfNames,
+        ShowSrgNames,
+        ShowIntermediaryNamesRight,
+        ShowObfNamesRight,
+        ShowSrgNamesRight,
+        MaxSearchResults,
+        AutoFetchManifest,
+        Theme,
+    };
 
-// Add new setting keys here
-enum class SettingKey {
-    AnimationDuration,
-    ShowIntermediaryNames,
-    ShowObfNames,
-    ShowSrgNames,
-    ShowIntermediaryNamesRight,
-    ShowObfNamesRight,
-    ShowSrgNamesRight,
-    MaxSearchResults,
-    AutoFetchManifest,
-    Theme,
-};
+    enum class Theme
+    {
+        Dark,
+        Light,
+        System
+    };
 
-enum class Theme {
-    Dark,
-    Light,
-    System
-};
+    using SettingValue = std::variant<std::monostate, bool, int, float, std::string, Theme>;
 
-using SettingValue = std::variant<std::monostate, bool, int, float, std::string, Theme>;
+    struct SettingEntry
+    {
+        SettingValue value;
+        SettingValue defaultValue;
+        SettingValue min;
+        SettingValue max;
+        std::string description;
+        std::string category;
+    };
 
-struct SettingEntry {
-    SettingValue value;
-    SettingValue defaultValue;
-    SettingValue min;
-    SettingValue max;
-    std::string description;
-    std::string category;
-};
+    class Settings
+    {
+    public:
+        static Settings& instance();
 
-class Settings {
-public:
-    static Settings& instance();
-
-    template<typename T>
-    T get(SettingKey key) const {
-        auto it = entries_.find(key);
-        if (it == entries_.end()) return T{};
-        if (const auto* v = std::get_if<T>(&it->second.value)) return *v;
-        if (const auto* v = std::get_if<T>(&it->second.defaultValue)) return *v;
-        return T{};
-    }
-
-    template<typename T>
-    void set(SettingKey key, const T& value) {
-        auto it = entries_.find(key);
-        if (it != entries_.end()) {
-            it->second.value = value;
-            dirty_ = true;
+        template <typename T>
+        T get(SettingKey key) const
+        {
+            auto it = entries_.find(key);
+            if (it == entries_.end()) return T{};
+            if (const auto* v = std::get_if<T>(&it->second.value)) return *v;
+            if (const auto* v = std::get_if<T>(&it->second.defaultValue)) return *v;
+            return T{};
         }
-    }
 
-    void resetToDefaults();
+        template <typename T>
+        void set(SettingKey key, const T& value)
+        {
+            auto it = entries_.find(key);
+            if (it != entries_.end())
+            {
+                it->second.value = value;
+                dirty_ = true;
+            }
+        }
 
-    void save(const std::string& path) const;
-    void load(const std::string& path);
+        void resetToDefaults();
 
-    void renderAll();
+        void save(const std::string& path) const;
+        void load(const std::string& path);
 
-    bool isDirty() const { return dirty_; }
-    void clearDirty() { dirty_ = false; }
+        void renderAll();
 
-    void applyThemeIfNeeded();
-    Theme getEffectiveTheme() const;
+        bool isDirty() const { return dirty_; }
+        void clearDirty() { dirty_ = false; }
 
-    const std::map<SettingKey, SettingEntry>& entries() const { return entries_; }
+        void applyThemeIfNeeded();
+        Theme getEffectiveTheme() const;
 
-private:
-    Settings();
-    std::map<SettingKey, SettingEntry> entries_;
-    bool dirty_ = false;
+        const std::map<SettingKey, SettingEntry>& entries() const { return entries_; }
 
-    void define(SettingKey key, SettingValue defaultVal, SettingValue minVal, SettingValue maxVal,
-                std::string desc, std::string cat);
-    void renderEntry(SettingKey key, SettingEntry& entry);
+    private:
+        Settings();
+        std::map<SettingKey, SettingEntry> entries_;
+        bool dirty_ = false;
 
-    Theme lastAppliedTheme_ = Theme::Dark;
+        void define(SettingKey key, SettingValue defaultVal, SettingValue minVal, SettingValue maxVal,
+                    std::string desc, std::string cat);
+        void renderEntry(SettingKey key, SettingEntry& entry);
 
-    static nlohmann::json valueToJson(const SettingValue& v);
-    static SettingValue jsonToValue(const nlohmann::json& j, const SettingValue& typeRef);
-};
+        Theme lastAppliedTheme_ = Theme::Dark;
 
+        static nlohmann::json valueToJson(const SettingValue& v);
+        static SettingValue jsonToValue(const nlohmann::json& j, const SettingValue& typeRef);
+    };
 } // namespace mcobfF

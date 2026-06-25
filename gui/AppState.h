@@ -5,18 +5,22 @@
 #include <future>
 #include <set>
 #include <map>
+#include <atomic>
 #include "config/Settings.h"
 
 struct HWND__;
 using HWND = HWND__*;
 
-namespace mcobfF {
+namespace mcobfF
+{
     class api;
     struct MappingData;
 }
 
-struct TreeNode {
+struct TreeNode
+{
     enum Type { Root, Directory, ClassEntry, Method, Field };
+
     Type type = Root;
     std::string name;
     std::string obfName;
@@ -28,7 +32,8 @@ struct TreeNode {
     std::vector<TreeNode> children;
 };
 
-struct FlatNode {
+struct FlatNode
+{
     const TreeNode* node;
     int depth;
     bool isOpen;
@@ -36,14 +41,17 @@ struct FlatNode {
     std::string displayName;
 };
 
-struct Selection {
+struct Selection
+{
     enum Type { None, Class, Method, Field };
+
     Type type = None;
     int entryIndex = -1;
     int memberIndex = -1;
 };
 
-class AppState {
+class AppState
+{
 public:
     AppState();
     ~AppState();
@@ -71,10 +79,13 @@ private:
     void renderClassDetails(int entryIndex);
     void renderMethodDetails(int entryIndex, int memberIndex);
     void renderFieldDetails(int entryIndex, int memberIndex);
-    static bool treeNodeMatchesFilter(const TreeNode& node, const std::string& classFilter, const std::string& memberFilter, bool hasPipe);
-    void renderTreeNode(TreeNode& node, const std::string& classFilter, const std::string& memberFilter, bool filtering);
+    static bool treeNodeMatchesFilter(const TreeNode& node, const std::string& classFilter,
+                                      const std::string& memberFilter, bool hasPipe);
+    void renderTreeNode(TreeNode& node, const std::string& classFilter, const std::string& memberFilter,
+                        bool filtering);
 
-    struct VersionEntry {
+    struct VersionEntry
+    {
         std::string id;
         std::string type;
         std::string releaseTime;
@@ -122,6 +133,20 @@ private:
     std::future<bool> dumpFuture_;
     bool showDumpConfirm_ = false;
 
+    std::string decompiledSource_;
+    bool decompiling_ = false;
+    std::string decompileError_;
+    std::future<std::optional<std::string>> decompileFuture_;
+    int decompiledEntryIndex_ = -1;
+
+    // Method-level decompiled source
+    std::string methodDecompiledSource_;
+    std::string methodDecompileError_;
+    bool methodDecompiling_ = false;
+    std::future<std::optional<std::string>> methodDecompileFuture_;
+    int methodDecompiledEntryIndex_ = -1;
+    int methodDecompiledMemberIndex_ = -1;
+
     // Animation states
     float classInfoAnim_ = 0.0f;
     float methodsAnim_ = 0.0f;
@@ -136,6 +161,8 @@ private:
     std::map<std::string, float> nodeAnimTargets_; // Target state (0.0 = closed, 1.0 = open)
     std::map<std::string, float> parentBottomY_; // Track parent node bottom Y for clipping
     std::map<std::string, int> closingDescendantCount_; // Visible descendant count when closing started
+
+    std::atomic<bool> shuttingDown_{false};
 
     int lastEntryIndex_ = -1;
     Selection::Type lastSelectionType_ = Selection::None;

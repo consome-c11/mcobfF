@@ -1,8 +1,10 @@
 # MC-OBF-Finder (mcobfF)
 
-This tool is an unofficial community project and is not affiliated with or endorsed by Mojang Studios, Microsoft, Minecraft Forge, or the Fabric Project.
+This tool is an unofficial community project and is not affiliated with or endorsed by Mojang Studios, Microsoft,
+Minecraft Forge, or the Fabric Project.
 
-The copyright for each piece of mapping data obtained by this tool belongs to the respective projects (Mojang Studios, Fabric Project, Forge).
+The copyright for each piece of mapping data obtained by this tool belongs to the respective projects (Mojang Studios,
+Fabric Project, Forge).
 
 Please do not publish or upload the dumped JSON file online.
 Redistributing official Mojang maps constitutes a breach of the ‘Minecraft’ End User Licence Agreement (EULA).
@@ -14,29 +16,44 @@ Please use this solely for development in a local environment or for personal de
 - **Multiple Mapping Formats**: Mojang mappings (TSRG), SRG, and Fabric Intermediary (Tiny)
 - **Auto-Download**: Fetches version manifest, client JARs, and mappings on demand
 - **Inheritance Resolution**: Enhanced mapping resolution via class hierarchy analysis
+- **Decompilation**: Decompiles classes using Vineflower, with batch decompile support
 - **Mapping Detail Panel**: View deobfuscated, obfuscated, intermediary, and SRG names side by side
-- **Cache Management**: Caches downloaded JARs and mappings locally
 - **Library API**: Also usable as a standalone library for programmatic access
 
 ## Building
 
 ### Requirements
+
 - Windows (Win32 API, DirectX 11)
 - C++20 compatible compiler (MSVC)
-- CMake 3.20+
+- CMake 3.21+
+- **Java Development Kit (JDK) 17+** — required for JNI (JAR remapping & decompilation)
 
 ### Build Steps
 
 ```bash
 mkdir build && cd build
-cmake ..
+cmake .. -DJAVA_HOME="C:\Path\To\JDK"
 cmake --build . --config Release
 ```
 
-Dependencies (auto-fetched via CMake FetchContent):
-- [nlohmann/json](https://github.com/nlohmann/json) v3.12.0
-- [miniz](https://github.com/richgel999/miniz) v3.1.1
-- [dear imgui](https://github.com/ocornut/imgui) v1.91.0
+> **Note**: Decompilation and JAR remapping features require `JAVA_HOME` to be set.
+> Without it, the build proceeds with a warning but the JNI-dependent features are unavailable.
+
+### Dependencies (auto-fetched via CMake FetchContent)
+
+| Dependency                                          | Version | Purpose                     |
+|-----------------------------------------------------|---------|-----------------------------|
+| [nlohmann/json](https://github.com/nlohmann/json)   | v3.12.0 | JSON parsing                |
+| [miniz](https://github.com/richgel999/miniz)        | v3.1.1  | ZIP/JAR handling            |
+| [Dear ImGui](https://github.com/ocornut/imgui)      | v1.91.0 | GUI framework               |
+| [magic_enum](https://github.com/Neargye/magic_enum) | v0.9.7  | Static reflection for enums |
+| [JNIHook](https://github.com/rdbo/jnihook)          | v2.2    | JNI function hooking        |
+
+### Runtime Dependencies
+
+- [Vineflower](https://github.com/Vineflower/vineflower) 1.12.0 — auto-downloaded on first use
+- [MinecraftRemapper](https://github.com/YvanMazy/MinecraftRemapper) 1.1 — auto-downloaded on first use
 
 ## Usage
 
@@ -81,10 +98,15 @@ int main() {
 }
 ```
 
-### With Inheritance Resolution
+### With Inheritance Resolution, Remapping & Decompilation
 
 ```cpp
 api.loadMappingsWithInheritance("1.21.1", "path/to/client.jar");
+// This also:
+//   - Builds class hierarchy from the JAR
+//   - Downloads & runs MinecraftRemapper to produce a remapped JAR
+//   - Initializes Vineflower decompiler
+//   - Starts background batch decompilation of all classes
 ```
 
 ### Dumping Mappings
@@ -108,55 +130,95 @@ auto snapshot = mcobfF::api::getLatestSnapshotVersion();
 
 ### `mcobfF::api`
 
-| Method | Description |
-|--------|-------------|
-| `api()` | Create with empty cache directory |
-| `api(cacheDir)` | Create with custom cache directory |
-| `loadMappings(version)` | Load Mojang + SRG + Intermediary mappings |
-| `loadMappingsWithInheritance(version, jarPath)` | Load mappings + enhance with JAR analysis |
-| `resolveClass(name, deobfToObf)` | Resolve class name |
-| `resolveMethod(class, method, params, deobfToObf)` | Resolve method name |
-| `resolveField(class, field, deobfToObf)` | Resolve field name |
-| `loadJar(jarPath)` | Load JAR for analysis |
-| `buildClassHierarchy()` | Build class hierarchy from loaded JAR |
-| `dumpMappings(version, outputPath)` | Static: dump version mappings to file |
-| `dumpJarMappings(jarPath, version, outputPath)` | Static: dump JAR mappings to file |
-| `getMappingData()` | Get raw mapping data |
-| `isMappingLoaded()` | Check if mappings are loaded |
-| `getCurrentVersion()` | Get currently loaded version |
-| `getLatestReleaseVersion()` | Static: get latest release version string |
-| `getLatestSnapshotVersion()` | Static: get latest snapshot version string |
+| Method                                             | Description                                                          |
+|----------------------------------------------------|----------------------------------------------------------------------|
+| `api()`                                            | Create with empty cache directory                                    |
+| `api(cacheDir)`                                    | Create with custom cache directory                                   |
+| `loadMappings(version)`                            | Load Mojang + SRG + Intermediary mappings                            |
+| `loadMappingsWithInheritance(version, jarPath)`    | Load mappings, build hierarchy, remap JAR, and start batch decompile |
+| `resolveClass(name, deobfToObf)`                   | Resolve class name                                                   |
+| `resolveMethod(class, method, params, deobfToObf)` | Resolve method name                                                  |
+| `resolveField(class, field, deobfToObf)`           | Resolve field name                                                   |
+| `loadJar(jarPath)`                                 | Load JAR for analysis                                                |
+| `buildClassHierarchy()`                            | Build class hierarchy from loaded JAR                                |
+| `dumpMappings(version, outputPath)`                | Static: dump version mappings to file                                |
+| `dumpJarMappings(jarPath, version, outputPath)`    | Static: dump JAR mappings to file                                    |
+| `getMappingData()`                                 | Get raw mapping data                                                 |
+| `isMappingLoaded()`                                | Check if mappings are loaded                                         |
+| `getCurrentVersion()`                              | Get currently loaded version                                         |
+| `getLatestReleaseVersion()`                        | Static: get latest release version string                            |
+| `getLatestSnapshotVersion()`                       | Static: get latest snapshot version string                           |
+| `initializeDecompiler()`                           | Initialize Vineflower JVM decompiler                                 |
+| `decompileClass(className)`                        | Decompile a single class (with caching)                              |
+| `decompileAndRemapClass(className)`                | Decompile and remap a class                                          |
+| `isDecompilerAvailable()`                          | Check if decompiler is initialized                                   |
+| `startDecompileAllAsync()`                         | Start batch decompilation of all JAR classes in background           |
+| `cancelDecompileAll()`                             | Cancel running batch decompilation                                   |
+| `isDecompilingAll()`                               | Check if batch decompilation is running                              |
+| `getDecompileProgress()`                           | Get batch decompilation progress (0.0 – 1.0)                         |
+| `getCurrentJarPath()`                              | Get path to currently loaded JAR                                     |
+| `getDecompileCacheDir()`                           | Get decompile cache directory path                                   |
+| `hasDecompiledCache(className)`                    | Check if a class has been cached after decompilation                 |
+| `getMappingFilePath()`                             | Get path to generated Tiny mapping file                              |
 
 ## Project Structure
 
 ```
-main.cpp             # WinMain entry, ImGui + DX11 setup
+main.cpp                    # WinMain entry, ImGui + DX11 setup
 gui/
-├── AppState.h/cpp   # GUI state, tree building, rendering logic
+├── AppState.h/cpp          # GUI state, tree building, rendering logic
+└── config/
+    └── Settings.h/cpp      # GUI settings (persistence)
 
 mcobfF/
-├── api/              # Public API (api.h/cpp)
-├── class/            # Class file parsing & hierarchy
-│   ├── ClassFileParser     # .class file binary parser
-│   ├── ClassHierarchyBuilder # Build hierarchy from JAR
-│   └── ClassInfo           # Data structures
-├── config/           # Configuration (API URLs, user agent)
-├── dumper/           # Mapping export (JarDumper)
-├── file/             # Filesystem utilities
-├── mapping/          # Mapping parsers & resolvers
-│   ├── MappingData        # Core data structures & queries
-│   ├── MappingParser      # Mojang mappings parser
-│   ├── TinyMappingParser  # Tiny v2 (Fabric Intermediary) parser
-│   ├── SRGParser          # SRG format parser
-│   ├── SRGResolver        # SRG download & resolution
-│   ├── MappingResolver    # Unified resolution orchestration
-│   └── InheritanceResolver # Inheritance-based enhancement
-├── network/          # HTTP client & version discovery
-├── zip/              # ZIP/JAR archive handling
-├── Types.h           # Common type definitions
-└── Logger.h          # Logging utility
+├── api/
+│   └── api.h/cpp           # Public API — mapping, decompilation, remapping orchestration
+├── class/                  # Class file parsing & hierarchy
+│   ├── ClassFileParser.h/cpp      # .class file binary parser
+│   ├── ClassHierarchyBuilder.h/cpp # Build inheritance hierarchy from JAR
+│   └── ClassInfo.h                # Data structures (ClassInfo, ClassHierarchy)
+├── config/
+│   └── ApiConfig.h                # API URLs, user agent, download links
+├── decompiler/             # Java decompilation (NEW)
+│   ├── FernflowerDecompiler.h/cpp # Vineflower JVM launcher via JNI
+│   └── JavaMethodParser.h/cpp     # Java source method signature extraction
+├── dumper/
+│   └── JarDumper.h/cpp            # Mapping export to JSON
+├── file/
+│   └── FileSystem.h/cpp           # Filesystem utilities (cache paths, directory ops)
+├── mapping/                # Mapping parsers & resolvers
+│   ├── MappingData.h/cpp          # Core data structures & query methods
+│   ├── MappingResolver.h/cpp      # Unified resolution orchestration
+│   ├── MappingWriter.h/cpp        # Mapping serialization to Tiny v2 format
+│   ├── MojMapParser.h/cpp         # Mojang mappings (TSRG) parser
+│   ├── TinyMappingParser.h/cpp    # Tiny v2 (Fabric Intermediary) parser
+│   ├── SRGParser.h/cpp            # SRG format parser
+│   ├── SRGResolver.h/cpp          # SRG download & resolution
+│   └── InheritanceResolver.h/cpp  # Inheritance-based mapping enhancement
+├── network/                # HTTP client & version discovery
+│   ├── HttpsClient.h/cpp          # WinHTTP-based HTTPS client
+│   └── VersionDownloader.h/cpp    # Version manifest & JAR downloading
+├── zip/
+│   └── ZipArchive.h/cpp           # ZIP/JAR archive reading
+├── Types.h                 # Common type definitions
+└── Logger.h                # Logging utility
 ```
+
+## Credits
+
+This project uses data and tools from the following projects:
+
+- **MinecraftRemapper** by [YvanMazy](https://github.com/YvanMazy) — JAR remapping via JNI bridge
+- **Vineflower** ([vineflower.org](https://vineflower.org)) — Java decompiler engine
+- **Mojang Mapping Data** — Official obfuscation mappings (TSRG format)
+- **Fabric Intermediary** ([Fabric MC](https://fabricmc.net/)) — Intermediary mappings (Tiny v2)
+- **MCP / SRG
+  ** ([MinecraftForge / MCPConfig](https://github.com/MinecraftForge/MCPConfig), [NeoForged / MCPConfig](https://github.com/neoforged/MCPConfig), [MCPBot](https://mcpbot.unascribed.com/)) —
+  SRG mappings and MCP names
+- **[nlohmann/json](https://github.com/nlohmann/json)** — JSON parsing
+- **[miniz](https://github.com/richgel999/miniz)** — ZIP/JAR handling
+- **[Dear ImGui](https://github.com/ocornut/imgui)** — GUI framework
 
 ## License
 
-WTFPL License - see LICENSE file for details.
+WTFPL License — see LICENSE file for details.

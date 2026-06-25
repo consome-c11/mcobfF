@@ -29,6 +29,16 @@ namespace mcobfF
         [[nodiscard]] bool getFileStat(mz_uint index, mz_zip_archive_file_stat& stat) const;
         [[nodiscard]] std::optional<std::vector<char>> extractToMemory(mz_uint index) const;
 
+        [[nodiscard]] std::vector<std::string> listEntries() const;
+        [[nodiscard]] bool readFile(const std::string& filename, std::string& outContent) const;
+
+        static bool filterJar(const std::string& inputPath,
+                              const std::string& outputPath,
+                              const std::vector<std::string>& keepPrefixes);
+
+        static bool removeRootClassFiles(const std::string& inputPath,
+                                         const std::string& outputPath);
+
     private:
         mz_zip_archive archive_{};
         bool isOpen_ = false;

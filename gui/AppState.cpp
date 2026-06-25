@@ -3,6 +3,8 @@
 #include "mcobfF/network/VersionDownloader.h"
 #include "mcobfF/mapping/MappingData.h"
 #include "mcobfF/file/FileSystem.h"
+#include "mcobfF/decompiler/FernflowerDecompiler.h"
+#include "mcobfF/decompiler/JavaMethodParser.h"
 #include "mcobfF/dumper/JarDumper.h"
 #include "config/Settings.h"
 
@@ -17,61 +19,119 @@
 #include <functional>
 #include <sstream>
 #include <cmath>
+#include <optional>
+#include <iomanip>
 
-AppState::AppState() {
+AppState::AppState()
+{
     cacheDir_ = mcobfF::JarDumper::getDefaultCacheDir();
     mcobfF::JarDumper::setCacheDir(cacheDir_);
-    if (const char* localAppData = std::getenv("LOCALAPPDATA")) {
+    if (const char* localAppData = std::getenv("LOCALAPPDATA"))
+    {
         configPath_ = std::string(localAppData) + "\\mcobfF\\config.json";
     }
     mcobfF::Settings::instance().load(configPath_);
     startFetchManifest();
 }
 
-AppState::~AppState() {
+AppState::~AppState()
+{
+    shuttingDown_ = true;
+    if (manifestFuture_.valid()) manifestFuture_.wait();
+    if (loadFuture_.valid()) loadFuture_.wait();
+    if (dumpFuture_.valid()) dumpFuture_.wait();
+    if (decompileFuture_.valid()) decompileFuture_.wait();
+    if (methodDecompileFuture_.valid()) methodDecompileFuture_.wait();
     mcobfF::Settings::instance().save(configPath_);
 }
 
-void AppState::setHwnd(HWND hwnd) {
+void AppState::setHwnd(HWND hwnd)
+{
     hwnd_ = hwnd;
 }
 
-void AppState::update() {
+void AppState::update()
+{
     mcobfF::Settings::instance().applyThemeIfNeeded();
 
-    if (mcobfF::Settings::instance().isDirty()) {
+    if (mcobfF::Settings::instance().isDirty())
+    {
         displayListDirty_ = true;
         mcobfF::Settings::instance().clearDirty();
     }
 
-    if (manifestFuture_.valid()) {
-        if (manifestFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+    if (manifestFuture_.valid())
+    {
+        if (manifestFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        {
             manifestFuture_.get();
             manifestFetching_ = false;
         }
     }
-    if (loadFuture_.valid()) {
-        if (loadFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+    if (loadFuture_.valid())
+    {
+        if (loadFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        {
             bool success = loadFuture_.get();
             loading_ = false;
-            if (success) {
+            if (success)
+            {
                 loaded_ = true;
                 loaded_ = api_->isMappingLoaded();
                 if (loaded_) buildTree();
                 else loadError_ = "API reports no mappings loaded";
-            } else {
+            }
+            else
+            {
                 loadError_ = loadError_.empty() ? "Failed to load version" : loadError_;
             }
         }
     }
-    if (dumpFuture_.valid()) {
-        if (dumpFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+    if (dumpFuture_.valid())
+    {
+        if (dumpFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        {
             bool success = dumpFuture_.get();
             dumping_ = false;
-            if (success) {
+            if (success)
+            {
                 dumpSuccess_ = true;
-            } else if (dumpError_.empty()) {
+            }
+            else if (dumpError_.empty())
+            {
                 dumpError_ = "Dump failed";
+            }
+        }
+    }
+    if (decompileFuture_.valid())
+    {
+        if (decompileFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        {
+            auto result = decompileFuture_.get();
+            decompiling_ = false;
+            if (result)
+            {
+                decompiledSource_ = std::move(*result);
+            }
+            else
+            {
+                decompileError_ = "Decompilation failed";
+            }
+        }
+    }
+    if (methodDecompileFuture_.valid())
+    {
+        if (methodDecompileFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        {
+            auto result = methodDecompileFuture_.get();
+            methodDecompiling_ = false;
+            if (result)
+            {
+                methodDecompiledSource_ = std::move(*result);
+            }
+            else
+            {
+                methodDecompileError_ = "Failed to extract method source";
             }
         }
     }
@@ -82,8 +142,8 @@ void AppState::update() {
 }
 
 
-
-float AppState::easeOutCubic(float t) {
+float AppState::easeOutCubic(float t)
+{
     // Smooth easing function: starts fast, slows down at the end
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
@@ -91,60 +151,78 @@ float AppState::easeOutCubic(float t) {
     return 1.0f - f * f * f;
 }
 
-float AppState::easeInOutCubic(float t) {
+float AppState::easeInOutCubic(float t)
+{
     // Smooth easing for both directions
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
-    if (t < 0.5f) {
+    if (t < 0.5f)
+    {
         return 4.0f * t * t * t;
-    } else {
+    }
+    else
+    {
         float f = 1.0f - t;
         return 1.0f - 4.0f * f * f * f;
     }
 }
 
-void AppState::updateAnimations(float deltaTime) {
+void AppState::updateAnimations(float deltaTime)
+{
     const float animDuration = mcobfF::Settings::instance().get<float>(mcobfF::SettingKey::AnimationDuration);
     const float animSpeed = 1.0f / animDuration;
-    
+
     // Helper lambda for smooth linear time-based animation
     // Easing is applied during rendering, not during time progression
-    auto animateValue = [deltaTime, animSpeed](float& value, float target) {
-        if (std::abs(value - target) < 0.001f) {
+    auto animateValue = [deltaTime, animSpeed](float& value, float target)
+    {
+        if (std::abs(value - target) < 0.001f)
+        {
             value = target;
             return;
         }
         float step = deltaTime * animSpeed;
-        if (target > value) {
+        if (target > value)
+        {
             value += step;
             if (value > target) value = target;
-        } else {
+        }
+        else
+        {
             value -= step;
             if (value < target) value = target;
         }
     };
 
     // Check if selection changed
-    bool selectionChanged = (selection_.type != lastSelectionType_) || 
-                            (selection_.entryIndex != lastEntryIndex_);
-    
-    if (selectionChanged) {
+    bool selectionChanged = (selection_.type != lastSelectionType_) ||
+        (selection_.entryIndex != lastEntryIndex_);
+
+    if (selectionChanged)
+    {
         // Reset animations when selection changes
-        if (selection_.type == Selection::None) {
+        if (selection_.type == Selection::None)
+        {
             classInfoAnim_ = 0.0f;
             methodsAnim_ = 0.0f;
             fieldsAnim_ = 0.0f;
             methodInfoAnim_ = 0.0f;
             fieldInfoAnim_ = 0.0f;
-        } else if (selection_.type == Selection::Class) {
+        }
+        else if (selection_.type == Selection::Class)
+        {
             classInfoAnim_ = 0.0f;
             methodsAnim_ = 0.0f;
             fieldsAnim_ = 0.0f;
             methodInfoAnim_ = 0.0f;
             fieldInfoAnim_ = 0.0f;
-        } else if (selection_.type == Selection::Method) {
+        }
+        else if (selection_.type == Selection::Method)
+        {
             methodInfoAnim_ = 0.0f;
-        } else if (selection_.type == Selection::Field) {
+        }
+        else if (selection_.type == Selection::Field)
+        {
             fieldInfoAnim_ = 0.0f;
         }
         lastSelectionType_ = selection_.type;
@@ -152,51 +230,66 @@ void AppState::updateAnimations(float deltaTime) {
     }
 
     // Animate based on current selection
-    if (selection_.type == Selection::Class) {
+    if (selection_.type == Selection::Class)
+    {
         animateValue(classInfoAnim_, 1.0f);
         animateValue(methodsAnim_, 1.0f);
         animateValue(fieldsAnim_, 1.0f);
-    } else if (selection_.type == Selection::Method) {
+    }
+    else if (selection_.type == Selection::Method)
+    {
         animateValue(methodInfoAnim_, 1.0f);
-    } else if (selection_.type == Selection::Field) {
+    }
+    else if (selection_.type == Selection::Field)
+    {
         animateValue(fieldInfoAnim_, 1.0f);
     }
 
     // Animate panels when loaded
-    if (loaded_) {
+    if (loaded_)
+    {
         animateValue(leftPanelAnim_, 1.0f);
         animateValue(rightPanelAnim_, 1.0f);
-    } else {
+    }
+    else
+    {
         leftPanelAnim_ = 0.0f;
         rightPanelAnim_ = 0.0f;
     }
 
     // Update tree node animations
-    for (auto& pair : nodeAnimStates_) {
+    for (auto& pair : nodeAnimStates_)
+    {
         const std::string& path = pair.first;
         float& current = pair.second;
         float target = 0.0f;
-        
+
         auto targetIt = nodeAnimTargets_.find(path);
-        if (targetIt != nodeAnimTargets_.end()) {
+        if (targetIt != nodeAnimTargets_.end())
+        {
             target = targetIt->second;
         }
-        
+
         animateValue(current, target);
     }
-    
+
     // Remove completed animations (value reached target and is 0.0)
     std::vector<std::string> toRemove;
-    for (const auto& pair : nodeAnimStates_) {
-        if (pair.second < 0.001f) {
+    for (const auto& pair : nodeAnimStates_)
+    {
+        if (pair.second < 0.001f)
+        {
             auto targetIt = nodeAnimTargets_.find(pair.first);
-            if (targetIt != nodeAnimTargets_.end() && targetIt->second < 0.001f) {
+            if (targetIt != nodeAnimTargets_.end() && targetIt->second < 0.001f)
+            {
                 toRemove.push_back(pair.first);
             }
         }
     }
-    if (!toRemove.empty()) {
-        for (const auto& path : toRemove) {
+    if (!toRemove.empty())
+    {
+        for (const auto& path : toRemove)
+        {
             nodeAnimStates_.erase(path);
             nodeAnimTargets_.erase(path);
             closingDescendantCount_.erase(path);
@@ -205,18 +298,23 @@ void AppState::updateAnimations(float deltaTime) {
     }
 }
 
-void AppState::startFetchManifest() {
+void AppState::startFetchManifest()
+{
     manifestFetching_ = true;
     manifestLoaded_ = false;
     manifestError_.clear();
-    manifestFuture_ = std::async(std::launch::async, [this]() {
+    manifestFuture_ = std::async(std::launch::async, [this]()
+    {
+        if (shuttingDown_) return;
         auto manifest = mcobfF::VersionDownloader::fetchManifest();
-        if (!manifest) {
+        if (!manifest)
+        {
             manifestError_ = "Failed to fetch version manifest";
             return;
         }
         auto& versions = (*manifest)["versions"];
-        for (auto& v : versions) {
+        for (auto& v : versions)
+        {
             VersionEntry ve;
             ve.id = v["id"];
             ve.type = v["type"];
@@ -224,20 +322,24 @@ void AppState::startFetchManifest() {
             allVersions_.push_back(std::move(ve));
         }
         std::sort(allVersions_.begin(), allVersions_.end(),
-            [](const VersionEntry& a, const VersionEntry& b) {
-                return a.releaseTime > b.releaseTime;
-            });
+                  [](const VersionEntry& a, const VersionEntry& b)
+                  {
+                      return a.releaseTime > b.releaseTime;
+                  });
         manifestLoaded_ = true;
     });
 }
 
-void AppState::updateDisplayedVersions() {
+void AppState::updateDisplayedVersions()
+{
     displayedVersions_.clear();
     std::string filter = versionFilter_;
     std::transform(filter.begin(), filter.end(), filter.begin(), ::tolower);
-    for (const auto& ve : allVersions_) {
+    for (const auto& ve : allVersions_)
+    {
         if (ve.type != "release" && ve.type != "snapshot") continue;
-        if (!filter.empty()) {
+        if (!filter.empty())
+        {
             std::string id = ve.id;
             std::transform(id.begin(), id.end(), id.begin(), ::tolower);
             if (id.find(filter) == std::string::npos) continue;
@@ -246,7 +348,8 @@ void AppState::updateDisplayedVersions() {
     }
 }
 
-void AppState::startLoadVersion(const std::string& version) {
+void AppState::startLoadVersion(const std::string& version)
+{
     selectedVersion_ = version;
     loading_ = true;
     loaded_ = false;
@@ -254,94 +357,128 @@ void AppState::startLoadVersion(const std::string& version) {
     treeRoot_.children.clear();
     selection_ = {};
     displayListDirty_ = true;
+    decompiledSource_.clear();
+    decompileError_.clear();
+    decompiledEntryIndex_ = -1;
+    methodDecompiledSource_.clear();
+    methodDecompileError_.clear();
+    methodDecompiling_ = false;
+    methodDecompiledEntryIndex_ = -1;
+    methodDecompiledMemberIndex_ = -1;
 
-    loadFuture_ = std::async(std::launch::async, [this, version]() -> bool {
-        try {
+    loadFuture_ = std::async(std::launch::async, [this, version]() -> bool
+    {
+        if (shuttingDown_) return false;
+        try
+        {
             auto jarPath = cacheDir_ + "\\" + version + "\\client.jar";
             (void)mcobfF::FileSystem::createDirectories(cacheDir_ + "\\" + version);
-            if (!mcobfF::VersionDownloader::downloadClientJar(version, jarPath)) {
+            if (!mcobfF::VersionDownloader::downloadClientJar(version, jarPath))
+            {
                 loadError_ = "Failed to download client JAR for " + version;
                 return false;
             }
             api_ = std::make_unique<mcobfF::api>(cacheDir_);
-            if (!api_->loadMappingsWithInheritance(version, jarPath)) {
+            if (!api_->loadMappingsWithInheritance(version, jarPath))
+            {
                 loadError_ = "Failed to load mappings for " + version;
                 return false;
             }
             return true;
-        } catch (const std::exception& e) {
+        }
+        catch (const std::exception& e)
+        {
             loadError_ = e.what();
             return false;
         }
     });
 }
 
-void AppState::buildTree() {
+void AppState::buildTree()
+{
     treeRoot_.children.clear();
     treeRoot_.type = TreeNode::Root;
     displayListDirty_ = true;
 
     const auto& data = api_->getMappingData();
 
-    for (int i = 0; i < (int)data.entries.size(); i++) {
+    for (int i = 0; i < (int)data.entries.size(); i++)
+    {
         const auto& entry = data.entries[i];
         std::string deobf = entry.classInfo.deobfClass;
 
         std::vector<std::string> parts;
         size_t start = 0, end;
-        while ((end = deobf.find('/', start)) != std::string::npos) {
+        while ((end = deobf.find('/', start)) != std::string::npos)
+        {
             parts.push_back(deobf.substr(start, end - start));
             start = end + 1;
         }
         parts.push_back(deobf.substr(start));
 
         std::string intermediaryShort;
-        if (entry.classInfo.intermediaryClass.has_value()) {
+        if (entry.classInfo.intermediaryClass.has_value())
+        {
             const std::string& interClass = entry.classInfo.intermediaryClass.value();
-            if (!interClass.empty()) {
+            if (!interClass.empty())
+            {
                 size_t lastSlash = interClass.rfind('/');
-                if (lastSlash != std::string::npos) {
+                if (lastSlash != std::string::npos)
+                {
                     intermediaryShort = interClass.substr(lastSlash + 1);
-                } else {
+                }
+                else
+                {
                     intermediaryShort = interClass;
                 }
             }
         }
 
         std::string obfClassShort;
-        if (!entry.classInfo.obfClass.empty()) {
+        if (!entry.classInfo.obfClass.empty())
+        {
             size_t lastSlash = entry.classInfo.obfClass.rfind('/');
-            obfClassShort = (lastSlash != std::string::npos) ? entry.classInfo.obfClass.substr(lastSlash + 1) : entry.classInfo.obfClass;
+            obfClassShort = (lastSlash != std::string::npos)
+                                ? entry.classInfo.obfClass.substr(lastSlash + 1)
+                                : entry.classInfo.obfClass;
         }
 
         TreeNode* current = &treeRoot_;
         std::string path;
-        for (size_t j = 0; j < parts.size(); j++) {
+        for (size_t j = 0; j < parts.size(); j++)
+        {
             if (!path.empty()) path += "/";
             path += parts[j];
 
             auto it = std::find_if(current->children.begin(), current->children.end(),
-                [&](const TreeNode& n) { return n.name == parts[j]; });
+                                   [&](const TreeNode& n) { return n.name == parts[j]; });
 
-            if (it != current->children.end()) {
+            if (it != current->children.end())
+            {
                 current = &*it;
-            } else {
+            }
+            else
+            {
                 TreeNode newNode;
                 newNode.name = parts[j];
                 newNode.displayPath = path;
                 newNode.entryIndex = (j == parts.size() - 1) ? i : -1;
                 newNode.type = (j == parts.size() - 1) ? TreeNode::ClassEntry : TreeNode::Directory;
-                if (j == parts.size() - 1 && !intermediaryShort.empty()) {
+                if (j == parts.size() - 1 && !intermediaryShort.empty())
+                {
                     newNode.intermediaryName = intermediaryShort;
                 }
-                if (j == parts.size() - 1 && entry.classInfo.srgClass.has_value()) {
+                if (j == parts.size() - 1 && entry.classInfo.srgClass.has_value())
+                {
                     const std::string& srg = entry.classInfo.srgClass.value();
-                    if (!srg.empty()) {
+                    if (!srg.empty())
+                    {
                         size_t lastSlash = srg.rfind('/');
                         newNode.srgName = (lastSlash != std::string::npos) ? srg.substr(lastSlash + 1) : srg;
                     }
                 }
-                if (j == parts.size() - 1 && !obfClassShort.empty()) {
+                if (j == parts.size() - 1 && !obfClassShort.empty())
+                {
                     newNode.obfName = obfClassShort;
                 }
                 current->children.push_back(std::move(newNode));
@@ -349,50 +486,62 @@ void AppState::buildTree() {
             }
         }
 
-        for (size_t m = 0; m < entry.methods.size(); m++) {
+        for (size_t m = 0; m < entry.methods.size(); m++)
+        {
             TreeNode mn;
             mn.name = entry.methods[m].deobfName + "(...)";
             mn.displayPath = current->displayPath + "/m" + std::to_string(m);
             mn.type = TreeNode::Method;
             mn.entryIndex = i;
             mn.memberIndex = (int)m;
-            if (!entry.methods[m].obfName.empty()) {
+            if (!entry.methods[m].obfName.empty())
+            {
                 mn.obfName = entry.methods[m].obfName;
             }
-            if (entry.methods[m].intermediaryName.has_value()) {
+            if (entry.methods[m].intermediaryName.has_value())
+            {
                 const std::string& interName = entry.methods[m].intermediaryName.value();
-                if (!interName.empty()) {
+                if (!interName.empty())
+                {
                     mn.intermediaryName = interName;
                 }
             }
-            if (entry.methods[m].srgName.has_value()) {
+            if (entry.methods[m].srgName.has_value())
+            {
                 const std::string& srg = entry.methods[m].srgName.value();
-                if (!srg.empty()) {
+                if (!srg.empty())
+                {
                     mn.srgName = srg;
                 }
             }
             current->children.push_back(std::move(mn));
         }
 
-        for (size_t f = 0; f < entry.fields.size(); f++) {
+        for (size_t f = 0; f < entry.fields.size(); f++)
+        {
             TreeNode fn;
             fn.name = entry.fields[f].deobfName;
             fn.displayPath = current->displayPath + "/f" + std::to_string(f);
             fn.type = TreeNode::Field;
             fn.entryIndex = i;
             fn.memberIndex = (int)f;
-            if (!entry.fields[f].obfName.empty()) {
+            if (!entry.fields[f].obfName.empty())
+            {
                 fn.obfName = entry.fields[f].obfName;
             }
-            if (entry.fields[f].intermediaryName.has_value()) {
+            if (entry.fields[f].intermediaryName.has_value())
+            {
                 const std::string& interName = entry.fields[f].intermediaryName.value();
-                if (!interName.empty()) {
+                if (!interName.empty())
+                {
                     fn.intermediaryName = interName;
                 }
             }
-            if (entry.fields[f].srgName.has_value()) {
+            if (entry.fields[f].srgName.has_value())
+            {
                 const std::string& srg = entry.fields[f].srgName.value();
-                if (!srg.empty()) {
+                if (!srg.empty())
+                {
                     fn.srgName = srg;
                 }
             }
@@ -400,39 +549,50 @@ void AppState::buildTree() {
         }
     }
 
-    std::function<void(TreeNode&)> sortTree = [&](TreeNode& node) {
+    std::function < void(TreeNode &) > sortTree = [&](TreeNode& node)
+    {
         std::stable_sort(node.children.begin(), node.children.end(),
-            [](const TreeNode& a, const TreeNode& b) {
-                auto order = [](TreeNode::Type t) -> int {
-                    switch (t) {
-                        case TreeNode::Directory: return 0;
-                        case TreeNode::ClassEntry: return 1;
-                        case TreeNode::Field: return 0;
-                        case TreeNode::Method: return 1;
-                        default: return 2;
-                    }
-                };
-                return order(a.type) < order(b.type);
-            });
-        for (auto& child : node.children) {
+                         [](const TreeNode& a, const TreeNode& b)
+                         {
+                             auto order = [](TreeNode::Type t) -> int
+                             {
+                                 switch (t)
+                                 {
+                                 case TreeNode::Directory: return 0;
+                                 case TreeNode::ClassEntry: return 1;
+                                 case TreeNode::Field: return 0;
+                                 case TreeNode::Method: return 1;
+                                 default: return 2;
+                                 }
+                             };
+                             return order(a.type) < order(b.type);
+                         });
+        for (auto& child : node.children)
+        {
             sortTree(child);
         }
     };
     sortTree(treeRoot_);
 }
 
-void AppState::renderGui() {
+void AppState::renderGui()
+{
     update();
     renderTitleBar();
 
-    if (loading_) {
+    if (loading_)
+    {
         ImGui::OpenPopup("Loading");
     }
 
-    if (ImGui::BeginPopupModal("Loading", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        if (!loading_) {
+    if (ImGui::BeginPopupModal("Loading", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        if (!loading_)
+        {
             ImGui::CloseCurrentPopup();
-        } else {
+        }
+        else
+        {
             ImGui::Text("Loading %s...", selectedVersion_.c_str());
             ImGui::Separator();
             ImGui::Text("Downloading and parsing mappings. Please wait...");
@@ -440,14 +600,19 @@ void AppState::renderGui() {
         ImGui::EndPopup();
     }
 
-    if (dumping_) {
+    if (dumping_)
+    {
         ImGui::OpenPopup("Dumping");
     }
 
-    if (ImGui::BeginPopupModal("Dumping", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        if (!dumping_) {
+    if (ImGui::BeginPopupModal("Dumping", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        if (!dumping_)
+        {
             ImGui::CloseCurrentPopup();
-        } else {
+        }
+        else
+        {
             ImGui::Text("Dumping mappings for %s...", selectedVersion_.c_str());
             ImGui::Separator();
             ImGui::Text("Writing to %s", dumpOutputPath_.c_str());
@@ -455,25 +620,31 @@ void AppState::renderGui() {
         ImGui::EndPopup();
     }
 
-    if (!loadError_.empty()) {
+    if (!loadError_.empty())
+    {
         ImGui::OpenPopup("Error");
     }
-    if (ImGui::BeginPopupModal("Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal("Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
         ImGui::Text("Error: %s", loadError_.c_str());
-        if (ImGui::Button("OK")) {
+        if (ImGui::Button("OK"))
+        {
             loadError_.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
 
-    if (dumpSuccess_) {
+    if (dumpSuccess_)
+    {
         ImGui::OpenPopup("Dump Complete");
     }
-    if (ImGui::BeginPopupModal("Dump Complete", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal("Dump Complete", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
         ImGui::Text("Successfully dumped mappings for %s", selectedVersion_.c_str());
         ImGui::Text("Output: %s", dumpOutputPath_.c_str());
-        if (ImGui::Button("OK")) {
+        if (ImGui::Button("OK"))
+        {
             dumpSuccess_ = false;
             dumpOutputPath_.clear();
             ImGui::CloseCurrentPopup();
@@ -481,24 +652,29 @@ void AppState::renderGui() {
         ImGui::EndPopup();
     }
 
-    if (!dumpError_.empty()) {
+    if (!dumpError_.empty())
+    {
         ImGui::OpenPopup("Dump Error");
     }
-    if (ImGui::BeginPopupModal("Dump Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal("Dump Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
         ImGui::Text("Dump failed:");
         ImGui::TextWrapped("%s", dumpError_.c_str());
-        if (ImGui::Button("OK")) {
+        if (ImGui::Button("OK"))
+        {
             dumpError_.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
 
-    if (showDumpConfirm_) {
+    if (showDumpConfirm_)
+    {
         ImGui::OpenPopup("Confirm Dump");
         showDumpConfirm_ = false;
     }
-    if (ImGui::BeginPopupModal("Confirm Dump", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal("Confirm Dump", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "WARNING: EULA Compliance Required");
         ImGui::Separator();
         ImGui::Text("The generated JSON file contains Mojang Official Mappings.");
@@ -510,13 +686,19 @@ void AppState::renderGui() {
         ImGui::Text("Output: %s", dumpOutputPath_.c_str());
         ImGui::Spacing();
 
-        if (ImGui::Button("I Understand - Dump")) {
+        if (ImGui::Button("I Understand - Dump"))
+        {
             dumping_ = true;
             dumpError_.clear();
-            dumpFuture_ = std::async(std::launch::async, [this]() -> bool {
-                try {
+            dumpFuture_ = std::async(std::launch::async, [this]() -> bool
+            {
+                if (shuttingDown_) return false;
+                try
+                {
                     return mcobfF::JarDumper::dumpFromVersion(selectedVersion_, dumpOutputPath_);
-                } catch (const std::exception& e) {
+                }
+                catch (const std::exception& e)
+                {
                     dumpError_ = e.what();
                     return false;
                 }
@@ -524,14 +706,16 @@ void AppState::renderGui() {
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel")) {
+        if (ImGui::Button("Cancel"))
+        {
             dumpOutputPath_.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
 
-    if (versionSelectorOpen_) {
+    if (versionSelectorOpen_)
+    {
         renderVersionSelector();
         return;
     }
@@ -541,59 +725,86 @@ void AppState::renderGui() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::Begin("MainContent", nullptr,
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus);
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus);
 
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.2f, 0.2f, 0.3f));
-    if (ImGui::Button("File")) {
+    if (ImGui::Button("File"))
+    {
         ImGui::OpenPopup("##FileMenuBar");
     }
     ImGui::SameLine();
-    if (ImGui::Button("Settings")) {
+    if (ImGui::Button("Settings"))
+    {
         ImGui::OpenPopup("##SettingsMenuBar");
     }
     ImGui::PopStyleColor(3);
-    if (ImGui::BeginPopup("##FileMenuBar")) {
-        if (ImGui::MenuItem("Select Version...", nullptr, false, !loading_)) {
+    if (ImGui::BeginPopup("##FileMenuBar"))
+    {
+        if (ImGui::MenuItem("Select Version...", nullptr, false, !loading_))
+        {
             versionSelectorOpen_ = true;
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Dump Mappings...", nullptr, false, loaded_ && !dumping_)) {
+        if (ImGui::MenuItem("Dump Mappings...", nullptr, false, loaded_ && !dumping_))
+        {
             dumpRequested();
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Clear Cache")) {
+        if (ImGui::MenuItem("Clear Cache"))
+        {
             clearCache();
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Exit")) {
-            PostQuitMessage(0);
+        if (ImGui::MenuItem("Exit"))
+        {
+            DestroyWindow(hwnd_);
         }
         ImGui::EndPopup();
     }
-    if (ImGui::BeginPopup("##SettingsMenuBar")) {
-        if (ImGui::MenuItem("Open Settings...")) {
+    if (ImGui::BeginPopup("##SettingsMenuBar"))
+    {
+        if (ImGui::MenuItem("Open Settings..."))
+        {
             settingsOpen_ = true;
         }
         ImGui::EndPopup();
     }
     ImGui::Separator();
 
-    if (settingsOpen_) {
+    if (settingsOpen_)
+    {
         renderSettingsWindow();
-    } else if (!loaded_) {
+    }
+    else if (!loaded_)
+    {
         float winW = ImGui::GetContentRegionAvail().x;
         float winH = ImGui::GetContentRegionAvail().y;
         ImGui::SetCursorPosX((winW - 200) * 0.5f);
         ImGui::SetCursorPosY((winH - 40) * 0.5f);
-        if (ImGui::Button("Select Version", ImVec2(200, 40))) {
+        if (ImGui::Button("Select Version", ImVec2(200, 40)))
+        {
             versionSelectorOpen_ = true;
         }
-    } else {
-        if (ImGui::BeginTable("MainLayout", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp)) {
+    }
+    else
+    {
+        if (api_&& api_
+        ->
+        isDecompilingAll()
+        )
+        {
+            float progress = api_->getDecompileProgress();
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.3f, 0.7f, 1.0f, 1.0f));
+            ImGui::ProgressBar(progress, ImVec2(-1, 0));
+            ImGui::PopStyleColor();
+            ImGui::Spacing();
+        }
+        if (ImGui::BeginTable("MainLayout", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp))
+        {
             ImGui::TableSetupColumn("LeftPanel", ImGuiTableColumnFlags_WidthStretch, 0.35f);
             ImGui::TableSetupColumn("RightPanel", ImGuiTableColumnFlags_WidthStretch, 0.65f);
             ImGui::TableNextRow();
@@ -612,7 +823,8 @@ void AppState::renderGui() {
     ImGui::PopStyleVar(2);
 }
 
-void AppState::renderTitleBar() {
+void AppState::renderTitleBar()
+{
     const float titleBarHeight = 36.0f;
     const float btnW = 46.0f;
     const ImU32 col = IM_COL32(235, 235, 235, 255);
@@ -631,10 +843,10 @@ void AppState::renderTitleBar() {
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetIO().DisplaySize.x, titleBarHeight));
 
     ImGui::Begin("##TitleBar", nullptr,
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
-        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus);
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus);
 
     float w = ImGui::GetWindowWidth();
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -643,8 +855,9 @@ void AppState::renderTitleBar() {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.15f, 0.15f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.85f, 0.05f, 0.05f, 1.0f));
-    if (ImGui::Button("##Close", ImVec2(btnW, titleBarHeight))) {
-        PostQuitMessage(0);
+    if (ImGui::Button("##Close", ImVec2(btnW, titleBarHeight)))
+    {
+        DestroyWindow(hwnd_);
     }
     ImGui::PopStyleColor(3);
 
@@ -665,7 +878,8 @@ void AppState::renderTitleBar() {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-    if (ImGui::Button("##Max", ImVec2(btnW, titleBarHeight))) {
+    if (ImGui::Button("##Max", ImVec2(btnW, titleBarHeight)))
+    {
         WINDOWPLACEMENT wp = {};
         wp.length = sizeof(wp);
         GetWindowPlacement(hwnd_, &wp);
@@ -688,7 +902,8 @@ void AppState::renderTitleBar() {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-    if (ImGui::Button("##Min", ImVec2(btnW, titleBarHeight))) {
+    if (ImGui::Button("##Min", ImVec2(btnW, titleBarHeight)))
+    {
         ShowWindow(hwnd_, SW_MINIMIZE);
     }
     ImGui::PopStyleColor(3);
@@ -705,7 +920,8 @@ void AppState::renderTitleBar() {
     ImGui::PushStyleColor(ImGuiCol_Text, titleBarText);
     ImGui::Text("MC-OBF-Find");
 
-    if (loaded_) {
+    if (loaded_)
+    {
         ImGui::SameLine();
         ImGui::SetCursorPosY((titleBarHeight - ImGui::GetFontSize()) * 0.5f);
         ImGui::TextDisabled("  |  %s", selectedVersion_.c_str());
@@ -717,22 +933,27 @@ void AppState::renderTitleBar() {
     ImGui::PopStyleVar(3);
 }
 
-void AppState::renderVersionSelector() {
+void AppState::renderVersionSelector()
+{
     ImGui::SetNextWindowSize(ImVec2(500, 600), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Select Version", &versionSelectorOpen_)) {
+    if (!ImGui::Begin("Select Version", &versionSelectorOpen_))
+    {
         ImGui::End();
         return;
     }
 
-    if (manifestFetching_) {
+    if (manifestFetching_)
+    {
         ImGui::Text("Fetching version manifest...");
         ImGui::End();
         return;
     }
 
-    if (!manifestError_.empty()) {
+    if (!manifestError_.empty())
+    {
         ImGui::TextColored(ImVec4(1, 0, 0, 1), "Error: %s", manifestError_.c_str());
-        if (ImGui::Button("Retry")) {
+        if (ImGui::Button("Retry"))
+        {
             manifestError_.clear();
             startFetchManifest();
         }
@@ -740,7 +961,8 @@ void AppState::renderVersionSelector() {
         return;
     }
 
-    if (!manifestLoaded_) {
+    if (!manifestLoaded_)
+    {
         ImGui::Text("Waiting for manifest...");
         ImGui::End();
         return;
@@ -752,18 +974,23 @@ void AppState::renderVersionSelector() {
     ImGui::Separator();
     ImGui::BeginChild("VersionList", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 10));
 
-    for (const auto* ve : displayedVersions_) {
+    for (const auto* ve : displayedVersions_)
+    {
         bool isRelease = ve->type == "release";
         std::string label = ve->id;
-        if (isRelease) {
+        if (isRelease)
+        {
             label += " [Release]";
-        } else {
+        }
+        else
+        {
             label += " [Snapshot]";
         }
 
         ImVec4 color = isRelease ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f) : ImVec4(0.8f, 0.8f, 0.2f, 1.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, color);
-        if (ImGui::Selectable(label.c_str(), ve->id == selectedVersion_)) {
+        if (ImGui::Selectable(label.c_str(), ve->id == selectedVersion_))
+        {
             startLoadVersion(ve->id);
             versionSelectorOpen_ = false;
         }
@@ -774,7 +1001,8 @@ void AppState::renderVersionSelector() {
     ImGui::End();
 }
 
-void AppState::renderSettingsWindow() {
+void AppState::renderSettingsWindow()
+{
     ImGui::Text("Settings");
     ImGui::Separator();
     ImGui::Spacing();
@@ -784,17 +1012,20 @@ void AppState::renderSettingsWindow() {
     ImGui::Spacing();
     ImGui::Separator();
 
-    if (ImGui::Button("Reset to Defaults")) {
+    if (ImGui::Button("Reset to Defaults"))
+    {
         mcobfF::Settings::instance().resetToDefaults();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Back")) {
+    if (ImGui::Button("Back"))
+    {
         mcobfF::Settings::instance().save(configPath_);
         settingsOpen_ = false;
     }
 }
 
-void AppState::clearCache() {
+void AppState::clearCache()
+{
     std::error_code ec;
     std::filesystem::remove_all(cacheDir_, ec);
     cacheDir_ = mcobfF::JarDumper::getDefaultCacheDir();
@@ -803,10 +1034,19 @@ void AppState::clearCache() {
     treeRoot_.children.clear();
     selection_ = {};
     displayListDirty_ = true;
+    decompiledSource_.clear();
+    decompileError_.clear();
+    decompiledEntryIndex_ = -1;
+    methodDecompiledSource_.clear();
+    methodDecompileError_.clear();
+    methodDecompiling_ = false;
+    methodDecompiledEntryIndex_ = -1;
+    methodDecompiledMemberIndex_ = -1;
     startFetchManifest();
 }
 
-void AppState::dumpRequested() {
+void AppState::dumpRequested()
+{
     wchar_t filename[MAX_PATH] = {};
     std::wstring defaultName = std::wstring(selectedVersion_.begin(), selectedVersion_.end()) + L"_mappings.json";
 
@@ -821,13 +1061,15 @@ void AppState::dumpRequested() {
     ofn.nMaxFileTitle = (DWORD)defaultName.size() + 1;
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY;
 
-    if (GetSaveFileNameW(&ofn)) {
+    if (GetSaveFileNameW(&ofn))
+    {
         dumpOutputPath_ = std::filesystem::path(filename).string();
         showDumpConfirm_ = true;
     }
 }
 
-void AppState::renderLeftPanel() {
+void AppState::renderLeftPanel()
+{
     ImGui::BeginChild("LeftPanel", ImVec2(0, 0), false);
 
     float alpha = easeOutCubic(leftPanelAnim_);
@@ -835,7 +1077,8 @@ void AppState::renderLeftPanel() {
 
     ImGui::InputText("Search", classFilter_, sizeof(classFilter_));
 
-    if (strcmp(classFilter_, lastFilter_) != 0) {
+    if (strcmp(classFilter_, lastFilter_) != 0)
+    {
         memcpy(lastFilter_, classFilter_, sizeof(lastFilter_));
         displayListDirty_ = true;
     }
@@ -848,11 +1091,14 @@ void AppState::renderLeftPanel() {
     std::string classFilter, memberFilter;
     bool hasPipe = false;
     auto pipePos = rawFilter.find('|');
-    if (pipePos != std::string::npos) {
+    if (pipePos != std::string::npos)
+    {
         classFilter = rawFilter.substr(0, pipePos);
         memberFilter = rawFilter.substr(pipePos + 1);
         hasPipe = true;
-    } else {
+    }
+    else
+    {
         classFilter = rawFilter;
         memberFilter = rawFilter;
     }
@@ -860,33 +1106,40 @@ void AppState::renderLeftPanel() {
     std::replace(memberFilter.begin(), memberFilter.end(), '.', '/');
     bool filtering = !rawFilter.empty();
 
-    if (filtering && !wasFiltering_) {
+    if (filtering && !wasFiltering_)
+    {
         savedExpandedNodes_ = expandedNodes_;
     }
-    if (!filtering && wasFiltering_) {
+    if (!filtering && wasFiltering_)
+    {
         expandedNodes_ = savedExpandedNodes_;
         displayListDirty_ = true;
     }
     wasFiltering_ = filtering;
     hasPipe_ = hasPipe;
 
-    auto matchesFilter = [](const std::string& str, const std::string& filter) -> bool {
+    auto matchesFilter = [](const std::string& str, const std::string& filter) -> bool
+    {
         if (filter.empty()) return true;
         std::string lower = str;
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
         return lower.find(filter) != std::string::npos;
     };
 
-    if (displayListDirty_) {
+    if (displayListDirty_)
+    {
         cachedDisplayList_.clear();
         // Don't clear parentBottomY_ here - it will be updated when nodes are rendered
 
-        auto filterPass = [&](const TreeNode& node) -> bool {
+        auto filterPass = [&](const TreeNode& node) -> bool
+        {
             if (!filtering) return true;
-            if (node.type == TreeNode::ClassEntry || node.type == TreeNode::Directory) {
+            if (node.type == TreeNode::ClassEntry || node.type == TreeNode::Directory)
+            {
                 return treeNodeMatchesFilter(node, classFilter, memberFilter, hasPipe_);
             }
-            if (hasPipe_) {
+            if (hasPipe_)
+            {
                 return matchesFilter(node.name, memberFilter)
                     || matchesFilter(node.obfName, memberFilter)
                     || matchesFilter(node.intermediaryName, memberFilter)
@@ -898,8 +1151,9 @@ void AppState::renderLeftPanel() {
                 || matchesFilter(node.srgName, rawFilter);
         };
 
-        std::function<void(const TreeNode&, int)> flattenFiltered;
-        flattenFiltered = [&](const TreeNode& node, int depth) {
+        std::function < void(const TreeNode &, int) > flattenFiltered;
+        flattenFiltered = [&](const TreeNode& node, int depth)
+        {
             if (!filterPass(node)) return;
             FlatNode fn;
             fn.node = &node;
@@ -911,13 +1165,16 @@ void AppState::renderLeftPanel() {
             bool isAnimating = nodeAnimStates_.count(path) > 0;
             fn.isOpen = filtering || isExpanded || isAnimating;
             cachedDisplayList_.push_back(fn);
-            if (fn.isOpen && (node.type == TreeNode::Directory || node.type == TreeNode::ClassEntry)) {
-                for (const auto& child : node.children) {
+            if (fn.isOpen && (node.type == TreeNode::Directory || node.type == TreeNode::ClassEntry))
+            {
+                for (const auto& child : node.children)
+                {
                     flattenFiltered(child, depth + 1);
                 }
             }
         };
-        for (const auto& child : treeRoot_.children) {
+        for (const auto& child : treeRoot_.children)
+        {
             flattenFiltered(child, 0);
         }
         displayListDirty_ = false;
@@ -930,7 +1187,8 @@ void AppState::renderLeftPanel() {
 
     // Collect closing node infos before the clipper loop
     // So we know which nodes are below closing nodes and can apply collapse offset
-    struct ClosingNodeInfo {
+    struct ClosingNodeInfo
+    {
         int displayIndex;
         int depth;
         int descendantCount;
@@ -941,16 +1199,21 @@ void AppState::renderLeftPanel() {
 
     bool hasClosingAnimation = false;
     bool hasAnyAnimation = !nodeAnimStates_.empty();
-    for (auto& [closePath, rawProgress] : nodeAnimStates_) {
+    for (auto& [closePath, rawProgress] : nodeAnimStates_)
+    {
         auto targetIt = nodeAnimTargets_.find(closePath);
-        if (targetIt != nodeAnimTargets_.end() && targetIt->second < 0.5f) {
+        if (targetIt != nodeAnimTargets_.end() && targetIt->second < 0.5f)
+        {
             // This is a closing animation
             hasClosingAnimation = true;
             auto countIt = closingDescendantCount_.find(closePath);
-            if (countIt != closingDescendantCount_.end() && countIt->second > 0) {
-                for (int j = 0; j < (int)cachedDisplayList_.size(); j++) {
+            if (countIt != closingDescendantCount_.end() && countIt->second > 0)
+            {
+                for (int j = 0; j < (int)cachedDisplayList_.size(); j++)
+                {
                     const std::string& nodePath = cachedDisplayList_[j].node->displayPath;
-                    if (nodePath == closePath) {
+                    if (nodePath == closePath)
+                    {
                         closingNodeInfos.push_back({
                             j,
                             cachedDisplayList_[j].depth,
@@ -966,8 +1229,10 @@ void AppState::renderLeftPanel() {
     }
 
     // Lambda to render a range of nodes
-    auto renderNodeRange = [&](int startIdx, int endIdx) {
-        for (int i = startIdx; i < endIdx; i++) {
+    auto renderNodeRange = [&](int startIdx, int endIdx)
+    {
+        for (int i = startIdx; i < endIdx; i++)
+        {
             const FlatNode& fn = cachedDisplayList_[i];
 
             float targetX = baseX + fn.depth * indentWidth;
@@ -983,51 +1248,61 @@ void AppState::renderLeftPanel() {
             bool pushedAlpha = false;
             bool pushedClip = false;
 
-            if (fn.depth > 0) {
+            if (fn.depth > 0)
+            {
                 std::string path = fn.node->displayPath.empty() ? fn.node->name : fn.node->displayPath;
 
                 // Check all ancestor paths for animations
                 std::string checkPath = path;
-                while (true) {
+                while (true)
+                {
                     size_t lastSlash = checkPath.rfind('/');
                     if (lastSlash == std::string::npos) break;
                     std::string ancestorPath = checkPath.substr(0, lastSlash);
 
                     auto animIt = nodeAnimStates_.find(ancestorPath);
-                    if (animIt != nodeAnimStates_.end()) {
+                    if (animIt != nodeAnimStates_.end())
+                    {
                         float rawProgress = animIt->second;
                         auto targetIt = nodeAnimTargets_.find(ancestorPath);
                         bool isClosing = (targetIt != nodeAnimTargets_.end() && targetIt->second < 0.5f);
 
-                        if (isClosing) {
+                        if (isClosing)
+                        {
                             // Closing: upward slide + fixed clip at parent bottom
                             float progress = easeInOutCubic(rawProgress); // 1->0
-                            
+
                             auto countIt = closingDescendantCount_.find(ancestorPath);
                             auto parentYIt = parentBottomY_.find(ancestorPath);
-                            if (countIt != closingDescendantCount_.end() && parentYIt != parentBottomY_.end()) {
+                            if (countIt != closingDescendantCount_.end() && parentYIt != parentBottomY_.end())
+                            {
                                 float localLineHeight = ImGui::GetTextLineHeightWithSpacing();
                                 float totalHeight = (countIt->second + 1) * localLineHeight;
                                 // Slide up by total height so all children hide under parent
                                 yOffset += (1.0f - progress) * -totalHeight;
-                                
+
                                 // Fixed clip at parent bottom
                                 float thisClipTop = parentYIt->second;
-                                if (!needsClip || thisClipTop > clipTopY) {
+                                if (!needsClip || thisClipTop > clipTopY)
+                                {
                                     clipTopY = thisClipTop;
                                     needsClip = true;
                                 }
                             }
-                        } else {
+                        }
+                        else
+                        {
                             // Opening: fade in + slide down
                             float progress = easeInOutCubic(rawProgress); // 0->1
                             parentAlpha *= progress;
                             yOffset += (1.0f - progress) * -15.0f;
 
                             auto parentYIt = parentBottomY_.find(ancestorPath);
-                            if (parentYIt != parentBottomY_.end()) {
+                            if (parentYIt != parentBottomY_.end())
+                            {
                                 float thisClipTop = parentYIt->second;
-                                if (!needsClip || thisClipTop > clipTopY) {
+                                if (!needsClip || thisClipTop > clipTopY)
+                                {
                                     clipTopY = thisClipTop;
                                     needsClip = true;
                                 }
@@ -1040,7 +1315,8 @@ void AppState::renderLeftPanel() {
             }
 
             // Skip rendering if completely faded out (only during opening)
-            if (parentAlpha < 0.01f) {
+            if (parentAlpha < 0.01f)
+            {
                 ImGui::SetCursorPosY(cursorYBefore + lineHeight);
                 continue;
             }
@@ -1048,12 +1324,15 @@ void AppState::renderLeftPanel() {
             // Apply collapse offset: nodes BELOW a closing node (not descendants)
             // slide up smoothly as the closing node's children disappear
             float collapseOffset = 0.0f;
-            for (const auto& cni : closingNodeInfos) {
-                if (i > cni.displayIndex) {
+            for (const auto& cni : closingNodeInfos)
+            {
+                if (i > cni.displayIndex)
+                {
                     // Check if this node is NOT a descendant of the closing node
                     std::string myPath = fn.node->displayPath.empty() ? fn.node->name : fn.node->displayPath;
                     bool isDescendant = (myPath.find(cni.path + "/") == 0);
-                    if (!isDescendant) {
+                    if (!isDescendant)
+                    {
                         float progress = easeInOutCubic(cni.rawProgress);
                         float collapseHeight = cni.descendantCount * lineHeight;
                         collapseOffset += (1.0f - progress) * -collapseHeight;
@@ -1063,13 +1342,15 @@ void AppState::renderLeftPanel() {
             yOffset += collapseOffset;
 
             // Apply alpha
-            if (parentAlpha < 0.999f) {
+            if (parentAlpha < 0.999f)
+            {
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, parentAlpha);
                 pushedAlpha = true;
             }
 
             // Apply clip rect for opening animation
-            if (needsClip) {
+            if (needsClip)
+            {
                 ImVec2 windowPos = ImGui::GetWindowPos();
                 float contentRegionMinY = ImGui::GetWindowContentRegionMin().y;
                 ImGui::PushClipRect(
@@ -1080,12 +1361,15 @@ void AppState::renderLeftPanel() {
                 pushedClip = true;
             }
 
-            if (std::abs(yOffset) > 0.01f) {
+            if (std::abs(yOffset) > 0.01f)
+            {
                 ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
             }
 
-            switch (fn.type) {
-            case TreeNode::Directory: {
+            switch (fn.type)
+            {
+            case TreeNode::Directory:
+                {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.65f, 0.85f, 1.0f));
 
                     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_None;
@@ -1097,16 +1381,21 @@ void AppState::renderLeftPanel() {
                     std::string path = fn.node->displayPath;
                     parentBottomY_[path] = cursorYBefore + yOffset + lineHeight;
 
-                    if (open != fn.isOpen) {
-                        if (open) {
+                    if (open != fn.isOpen)
+                    {
+                        if (open)
+                        {
                             expandedNodes_.insert(path);
                             nodeAnimTargets_[path] = 1.0f;
                             nodeAnimStates_[path] = 0.0f;
-                        } else {
+                        }
+                        else
+                        {
                             expandedNodes_.erase(path);
                             nodeAnimTargets_[path] = 0.0f;
                             int count = 0;
-                            for (int j = i + 1; j < (int)cachedDisplayList_.size(); j++) {
+                            for (int j = i + 1; j < (int)cachedDisplayList_.size(); j++)
+                            {
                                 if (cachedDisplayList_[j].depth <= fn.depth) break;
                                 count++;
                             }
@@ -1118,11 +1407,13 @@ void AppState::renderLeftPanel() {
                     ImGui::PopStyleColor();
                     break;
                 }
-            case TreeNode::ClassEntry: {
+            case TreeNode::ClassEntry:
+                {
                     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow;
                     if (fn.node->children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
 
-                    if (fn.type == TreeNode::ClassEntry) {
+                    if (fn.type == TreeNode::ClassEntry)
+                    {
                         if (selection_.type == Selection::Class && selection_.entryIndex == fn.node->entryIndex)
                             flags |= ImGuiTreeNodeFlags_Selected;
                     }
@@ -1133,16 +1424,21 @@ void AppState::renderLeftPanel() {
                     std::string path = fn.node->displayPath;
                     parentBottomY_[path] = cursorYBefore + yOffset + lineHeight;
 
-                    if (open != fn.isOpen) {
-                        if (open) {
+                    if (open != fn.isOpen)
+                    {
+                        if (open)
+                        {
                             expandedNodes_.insert(path);
                             nodeAnimTargets_[path] = 1.0f;
                             nodeAnimStates_[path] = 0.0f;
-                        } else {
+                        }
+                        else
+                        {
                             expandedNodes_.erase(path);
                             nodeAnimTargets_[path] = 0.0f;
                             int count = 0;
-                            for (int j = i + 1; j < (int)cachedDisplayList_.size(); j++) {
+                            for (int j = i + 1; j < (int)cachedDisplayList_.size(); j++)
+                            {
                                 if (cachedDisplayList_[j].depth <= fn.depth) break;
                                 count++;
                             }
@@ -1150,7 +1446,8 @@ void AppState::renderLeftPanel() {
                         }
                     }
 
-                    if (fn.type == TreeNode::ClassEntry && ImGui::IsItemClicked()) {
+                    if (fn.type == TreeNode::ClassEntry && ImGui::IsItemClicked())
+                    {
                         selection_.type = Selection::Class;
                         selection_.entryIndex = fn.node->entryIndex;
                         selection_.memberIndex = -1;
@@ -1158,30 +1455,35 @@ void AppState::renderLeftPanel() {
 
                     if (open) ImGui::TreePop();
                     break;
-            }
-            case TreeNode::Method:
-            case TreeNode::Field: {
-                bool sel = false;
-                if (fn.type == TreeNode::Method)
-                    sel = (selection_.type == Selection::Method &&
-                           selection_.entryIndex == fn.node->entryIndex &&
-                           selection_.memberIndex == fn.node->memberIndex);
-                else
-                    sel = (selection_.type == Selection::Field &&
-                           selection_.entryIndex == fn.node->entryIndex &&
-                           selection_.memberIndex == fn.node->memberIndex);
-
-                if (ImGui::Selectable(fn.displayName.c_str(), sel)) {
-                    if (fn.type == TreeNode::Method) {
-                        selection_.type = Selection::Method;
-                    } else {
-                        selection_.type = Selection::Field;
-                    }
-                    selection_.entryIndex = fn.node->entryIndex;
-                    selection_.memberIndex = fn.node->memberIndex;
                 }
-                break;
-            }
+            case TreeNode::Method:
+            case TreeNode::Field:
+                {
+                    bool sel = false;
+                    if (fn.type == TreeNode::Method)
+                        sel = (selection_.type == Selection::Method &&
+                            selection_.entryIndex == fn.node->entryIndex &&
+                            selection_.memberIndex == fn.node->memberIndex);
+                    else
+                        sel = (selection_.type == Selection::Field &&
+                            selection_.entryIndex == fn.node->entryIndex &&
+                            selection_.memberIndex == fn.node->memberIndex);
+
+                    if (ImGui::Selectable(fn.displayName.c_str(), sel))
+                    {
+                        if (fn.type == TreeNode::Method)
+                        {
+                            selection_.type = Selection::Method;
+                        }
+                        else
+                        {
+                            selection_.type = Selection::Field;
+                        }
+                        selection_.entryIndex = fn.node->entryIndex;
+                        selection_.memberIndex = fn.node->memberIndex;
+                    }
+                    break;
+                }
             default: break;
             }
 
@@ -1189,10 +1491,12 @@ void AppState::renderLeftPanel() {
             // (unrelated to the animation) are NOT displaced upward.
             ImGui::SetCursorPosY(cursorYBefore + lineHeight);
 
-            if (pushedClip) {
+            if (pushedClip)
+            {
                 ImGui::PopClipRect();
             }
-            if (pushedAlpha) {
+            if (pushedAlpha)
+            {
                 ImGui::PopStyleVar();
             }
         }
@@ -1200,17 +1504,22 @@ void AppState::renderLeftPanel() {
 
     // When any animation is active, render ALL nodes (skip clipper)
     // to ensure animating children are not culled by the list clipper
-    if (hasAnyAnimation) {
+    if (hasAnyAnimation)
+    {
         renderNodeRange(0, (int)cachedDisplayList_.size());
-    } else {
+    }
+    else
+    {
         ImGuiListClipper clipper;
         clipper.Begin((int)cachedDisplayList_.size(), ImGui::GetTextLineHeightWithSpacing());
-        while (clipper.Step()) {
+        while (clipper.Step())
+        {
             renderNodeRange(clipper.DisplayStart, clipper.DisplayEnd);
         }
     }
 
-    if (expandedBefore != expandedNodes_) {
+    if (expandedBefore != expandedNodes_)
+    {
         displayListDirty_ = true;
     }
 
@@ -1218,9 +1527,12 @@ void AppState::renderLeftPanel() {
     ImGui::EndChild();
 }
 
-void AppState::flattenTree(std::vector<FlatNode>& out, const TreeNode& node, int depth) {
-    if (&node == &treeRoot_) {
-        for (const auto& child : node.children) {
+void AppState::flattenTree(std::vector<FlatNode>& out, const TreeNode& node, int depth)
+{
+    if (&node == &treeRoot_)
+    {
+        for (const auto& child : node.children)
+        {
             flattenTree(out, child, 0);
         }
         return;
@@ -1238,39 +1550,48 @@ void AppState::flattenTree(std::vector<FlatNode>& out, const TreeNode& node, int
 
     out.push_back(fn);
 
-    if (fn.isOpen && (node.type == TreeNode::Directory || node.type == TreeNode::ClassEntry)) {
-        for (const auto& child : node.children) {
+    if (fn.isOpen && (node.type == TreeNode::Directory || node.type == TreeNode::ClassEntry))
+    {
+        for (const auto& child : node.children)
+        {
             flattenTree(out, child, depth + 1);
         }
     }
 }
 
-std::string AppState::buildDisplayName(const TreeNode& node) {
+std::string AppState::buildDisplayName(const TreeNode& node)
+{
     const bool showIntermediary = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNames);
     const bool showObf = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowObfNames);
     const bool showSrg = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNames);
 
     std::string name = node.name;
-    if (node.type == TreeNode::ClassEntry) {
+    if (node.type == TreeNode::ClassEntry)
+    {
         if (showIntermediary && !node.intermediaryName.empty())
             name += " [" + node.intermediaryName + "]";
         if (showObf && !node.obfName.empty())
             name += " [" + node.obfName + "]";
         if (showSrg && !node.srgName.empty())
             name += " [" + node.srgName + "]";
-    } else if (node.type == TreeNode::Method) {
+    }
+    else if (node.type == TreeNode::Method)
+    {
         std::string suffix;
         if (showIntermediary && !node.intermediaryName.empty()) suffix += " [" + node.intermediaryName + "]";
         if (showObf && !node.obfName.empty()) suffix += " [" + node.obfName + "]";
         if (showSrg && !node.srgName.empty()) suffix += " [" + node.srgName + "]";
-        if (!suffix.empty()) {
+        if (!suffix.empty())
+        {
             size_t pos = name.rfind("(...)");
             if (pos != std::string::npos)
                 name = name.substr(0, pos) + suffix + name.substr(pos);
             else
                 name += suffix;
         }
-    } else if (node.type == TreeNode::Field) {
+    }
+    else if (node.type == TreeNode::Field)
+    {
         if (showIntermediary && !node.intermediaryName.empty()) name += " [" + node.intermediaryName + "]";
         if (showObf && !node.obfName.empty()) name += " [" + node.obfName + "]";
         if (showSrg && !node.srgName.empty()) name += " [" + node.srgName + "]";
@@ -1278,18 +1599,22 @@ std::string AppState::buildDisplayName(const TreeNode& node) {
     return name;
 }
 
-bool AppState::treeNodeMatchesFilter(const TreeNode& node, const std::string& classFilter, const std::string& memberFilter, bool hasPipe)
+bool AppState::treeNodeMatchesFilter(const TreeNode& node, const std::string& classFilter,
+                                     const std::string& memberFilter, bool hasPipe)
 {
-    auto matchesFilter = [](const std::string& str, const std::string& filter) -> bool {
+    auto matchesFilter = [](const std::string& str, const std::string& filter) -> bool
+    {
         std::string lower = str;
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
         return lower.find(filter) != std::string::npos;
     };
 
-    std::function<bool(const TreeNode&, const std::string&)> anyDescendantMatches;
-    anyDescendantMatches = [&](const TreeNode& n, const std::string& filter) -> bool {
+    std::function < bool(const TreeNode &, const std::string &) > anyDescendantMatches;
+    anyDescendantMatches = [&](const TreeNode& n, const std::string& filter) -> bool
+    {
         if (filter.empty()) return true;
-        for (const auto& child : n.children) {
+        for (const auto& child : n.children)
+        {
             if (matchesFilter(child.name, filter)) return true;
             if (!child.obfName.empty() && matchesFilter(child.obfName, filter)) return true;
             if (!child.intermediaryName.empty() && matchesFilter(child.intermediaryName, filter)) return true;
@@ -1306,39 +1631,51 @@ bool AppState::treeNodeMatchesFilter(const TreeNode& node, const std::string& cl
         || matchesFilter(node.srgName, classFilter)
         || matchesFilter(node.displayPath, classFilter);
 
-    if (!hasPipe) {
+    if (!hasPipe)
+    {
         if (classMatch) return true;
         return anyDescendantMatches(node, classFilter);
     }
 
     if (classMatch && anyDescendantMatches(node, memberFilter)) return true;
-    for (const auto& child : node.children) {
+    for (const auto& child : node.children)
+    {
         if (treeNodeMatchesFilter(child, classFilter, memberFilter, hasPipe)) return true;
     }
     return false;
 }
 
-void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, const std::string& memberFilter, bool filtering) {
+void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, const std::string& memberFilter,
+                              bool filtering)
+{
     const bool showIntermediary = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNames);
     const bool showObf = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowObfNames);
     const bool showSrg = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNames);
 
-    auto matchesFilter = [](const std::string& str, const std::string& filter) -> bool {
+    auto matchesFilter = [](const std::string& str, const std::string& filter) -> bool
+    {
         if (filter.empty()) return true;
         std::string lower = str;
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
         return lower.find(filter) != std::string::npos;
     };
 
-    if (node.type == TreeNode::Directory || node.type == TreeNode::Root) {
+    if (node.type == TreeNode::Directory || node.type == TreeNode::Root)
+    {
         if (filtering && node.children.empty()) return;
 
-        if (filtering) {
-            std::function<bool(const TreeNode&)> hasVisible = [&](const TreeNode& n) -> bool {
-                for (auto& c : n.children) {
-                    if (c.type == TreeNode::ClassEntry) {
+        if (filtering)
+        {
+            std::function < bool(const TreeNode &) > hasVisible = [&](const TreeNode& n) -> bool
+            {
+                for (auto& c : n.children)
+                {
+                    if (c.type == TreeNode::ClassEntry)
+                    {
                         if (treeNodeMatchesFilter(c, classFilter, memberFilter, hasPipe_)) return true;
-                    } else if (c.type == TreeNode::Directory) {
+                    }
+                    else if (c.type == TreeNode::Directory)
+                    {
                         if (hasVisible(c)) return true;
                     }
                 }
@@ -1351,30 +1688,41 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
         if (node.children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
 
         std::string nodePath = node.displayPath.empty() ? node.name : node.displayPath;
-        if (filtering) {
+        if (filtering)
+        {
             ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-        } else {
+        }
+        else
+        {
             bool shouldBeOpen = expandedNodes_.count(nodePath) > 0;
             ImGui::SetNextItemOpen(shouldBeOpen, ImGuiCond_Always);
         }
 
         bool open = ImGui::TreeNodeEx(node.name.c_str(), flags);
 
-        if (!filtering) {
-            if (open) {
+        if (!filtering)
+        {
+            if (open)
+            {
                 expandedNodes_.insert(nodePath);
-            } else {
+            }
+            else
+            {
                 expandedNodes_.erase(nodePath);
             }
         }
 
-        if (open) {
-            for (auto& child : node.children) {
+        if (open)
+        {
+            for (auto& child : node.children)
+            {
                 renderTreeNode(child, classFilter, memberFilter, filtering);
             }
             ImGui::TreePop();
         }
-    } else if (node.type == TreeNode::ClassEntry) {
+    }
+    else if (node.type == TreeNode::ClassEntry)
+    {
         std::string childFilter = hasPipe_ ? memberFilter : classFilter;
         bool hasActiveFilter = filtering && (!classFilter.empty() || !memberFilter.empty());
 
@@ -1384,8 +1732,10 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
             || matchesFilter(node.srgName, classFilter)
             || matchesFilter(node.displayPath, classFilter);
         bool anyChildMatchesFilter = false;
-        if (!childFilter.empty()) {
-            for (auto& child : node.children) {
+        if (!childFilter.empty())
+        {
+            for (auto& child : node.children)
+            {
                 if (matchesFilter(child.name, childFilter)
                     || matchesFilter(child.obfName, childFilter)
                     || matchesFilter(child.intermediaryName, childFilter)
@@ -1398,57 +1748,76 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
         }
 
         bool visible;
-        if (!hasActiveFilter) {
+        if (!hasActiveFilter)
+        {
             visible = true;
-        } else if (!hasPipe_) {
+        }
+        else if (!hasPipe_)
+        {
             visible = classMatches || anyChildMatchesFilter;
-        } else {
+        }
+        else
+        {
             visible = (classFilter.empty() || classMatches) && (memberFilter.empty() || anyChildMatchesFilter);
         }
         if (!visible) return;
 
         std::string displayName = node.name;
-        if (showIntermediary && !node.intermediaryName.empty()) {
+        if (showIntermediary && !node.intermediaryName.empty())
+        {
             displayName += " [" + node.intermediaryName + "]";
         }
-        if (showObf && !node.obfName.empty()) {
+        if (showObf && !node.obfName.empty())
+        {
             displayName += " [" + node.obfName + "]";
         }
-        if (showSrg && !node.srgName.empty()) {
+        if (showSrg && !node.srgName.empty())
+        {
             displayName += " [" + node.srgName + "]";
         }
 
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow;
         if (node.children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
-        if (selection_.type == Selection::Class && selection_.entryIndex == node.entryIndex) {
+        if (selection_.type == Selection::Class && selection_.entryIndex == node.entryIndex)
+        {
             flags |= ImGuiTreeNodeFlags_Selected;
         }
 
         std::string nodePath = node.displayPath;
-        if (filtering && !node.children.empty()) {
+        if (filtering && !node.children.empty())
+        {
             ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-        } else {
+        }
+        else
+        {
             bool shouldBeOpen = expandedNodes_.count(nodePath) > 0;
             ImGui::SetNextItemOpen(shouldBeOpen, ImGuiCond_Always);
         }
 
         bool open = ImGui::TreeNodeEx(displayName.c_str(), flags);
-        if (ImGui::IsItemClicked()) {
+        if (ImGui::IsItemClicked())
+        {
             selection_.type = Selection::Class;
             selection_.entryIndex = node.entryIndex;
             selection_.memberIndex = -1;
         }
 
-        if (!filtering) {
-            if (open) {
+        if (!filtering)
+        {
+            if (open)
+            {
                 expandedNodes_.insert(nodePath);
-            } else {
+            }
+            else
+            {
                 expandedNodes_.erase(nodePath);
             }
         }
 
-        if (open) {
-            for (auto& child : node.children) {
+        if (open)
+        {
+            for (auto& child : node.children)
+            {
                 if (hasActiveFilter && !matchesFilter(child.name, childFilter)
                     && !matchesFilter(child.obfName, childFilter)
                     && !matchesFilter(child.intermediaryName, childFilter)
@@ -1456,50 +1825,65 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
                 {
                     continue;
                 }
-                if (child.type == TreeNode::Method) {
+                if (child.type == TreeNode::Method)
+                {
                     std::string childDisplay = child.name;
                     std::string suffix;
-                    if (showIntermediary && !child.intermediaryName.empty()) {
+                    if (showIntermediary && !child.intermediaryName.empty())
+                    {
                         suffix += " [" + child.intermediaryName + "]";
                     }
-                    if (showObf && !child.obfName.empty()) {
+                    if (showObf && !child.obfName.empty())
+                    {
                         suffix += " [" + child.obfName + "]";
                     }
-                    if (showSrg && !child.srgName.empty()) {
+                    if (showSrg && !child.srgName.empty())
+                    {
                         suffix += " [" + child.srgName + "]";
                     }
-                    if (!suffix.empty()) {
+                    if (!suffix.empty())
+                    {
                         size_t parenPos = childDisplay.rfind("(...)");
-                        if (parenPos != std::string::npos) {
+                        if (parenPos != std::string::npos)
+                        {
                             childDisplay = childDisplay.substr(0, parenPos) +
                                 suffix + childDisplay.substr(parenPos);
-                        } else {
+                        }
+                        else
+                        {
                             childDisplay += suffix;
                         }
                     }
                     bool sel = selection_.type == Selection::Method &&
-                               selection_.entryIndex == child.entryIndex &&
-                               selection_.memberIndex == child.memberIndex;
-                    if (ImGui::Selectable(("  " + childDisplay).c_str(), sel)) {
+                        selection_.entryIndex == child.entryIndex &&
+                        selection_.memberIndex == child.memberIndex;
+                    if (ImGui::Selectable(("  " + childDisplay).c_str(), sel))
+                    {
                         selection_.type = Selection::Method;
                         selection_.entryIndex = child.entryIndex;
                         selection_.memberIndex = child.memberIndex;
                     }
-                } else if (child.type == TreeNode::Field) {
+                }
+                else if (child.type == TreeNode::Field)
+                {
                     std::string childDisplay = child.name;
-                    if (showIntermediary && !child.intermediaryName.empty()) {
+                    if (showIntermediary && !child.intermediaryName.empty())
+                    {
                         childDisplay += " [" + child.intermediaryName + "]";
                     }
-                    if (showObf && !child.obfName.empty()) {
+                    if (showObf && !child.obfName.empty())
+                    {
                         childDisplay += " [" + child.obfName + "]";
                     }
-                    if (showSrg && !child.srgName.empty()) {
+                    if (showSrg && !child.srgName.empty())
+                    {
                         childDisplay += " [" + child.srgName + "]";
                     }
                     bool sel = selection_.type == Selection::Field &&
-                               selection_.entryIndex == child.entryIndex &&
-                               selection_.memberIndex == child.memberIndex;
-                    if (ImGui::Selectable(("  " + childDisplay).c_str(), sel)) {
+                        selection_.entryIndex == child.entryIndex &&
+                        selection_.memberIndex == child.memberIndex;
+                    if (ImGui::Selectable(("  " + childDisplay).c_str(), sel))
+                    {
                         selection_.type = Selection::Field;
                         selection_.entryIndex = child.entryIndex;
                         selection_.memberIndex = child.memberIndex;
@@ -1511,43 +1895,49 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
     }
 }
 
-void AppState::renderRightPanel() {
+void AppState::renderRightPanel()
+{
     ImGui::BeginChild("RightPanel", ImVec2(0, 0), true);
 
     float alpha = easeOutCubic(rightPanelAnim_);
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
 
-    if (selection_.type == Selection::None) {
+    if (selection_.type == Selection::None)
+    {
         ImGui::Text("Select a class, method, or field from the left panel.");
         ImGui::PopStyleVar();
         ImGui::EndChild();
         return;
     }
 
-    switch (selection_.type) {
-        case Selection::None:
-            ImGui::Text("Select a class, method, or field from the left panel.");
-            break;
-        case Selection::Class:
-            renderClassDetails(selection_.entryIndex);
-            break;
-        case Selection::Method:
-            renderMethodDetails(selection_.entryIndex, selection_.memberIndex);
-            break;
-        case Selection::Field:
-            renderFieldDetails(selection_.entryIndex, selection_.memberIndex);
-            break;
+    switch (selection_.type)
+    {
+    case Selection::None:
+        ImGui::Text("Select a class, method, or field from the left panel.");
+        break;
+    case Selection::Class:
+        renderClassDetails(selection_.entryIndex);
+        break;
+    case Selection::Method:
+        renderMethodDetails(selection_.entryIndex, selection_.memberIndex);
+        break;
+    case Selection::Field:
+        renderFieldDetails(selection_.entryIndex, selection_.memberIndex);
+        break;
     }
 
     ImGui::PopStyleVar();
     ImGui::EndChild();
 }
 
-static void CopyableText(const char* text) {
+static void CopyableText(const char* text)
+{
     ImGui::PushID(static_cast<const void*>(text));
     ImGui::Text("%s", text);
-    if (ImGui::BeginPopupContextItem("copy")) {
-        if (ImGui::MenuItem("Copy")) {
+    if (ImGui::BeginPopupContextItem("copy"))
+    {
+        if (ImGui::MenuItem("Copy"))
+        {
             ImGui::SetClipboardText(text);
         }
         ImGui::EndPopup();
@@ -1555,53 +1945,95 @@ static void CopyableText(const char* text) {
     ImGui::PopID();
 }
 
-void AppState::renderClassDetails(int entryIndex) {
+void AppState::renderClassDetails(int entryIndex)
+{
     if (entryIndex < 0 || entryIndex >= (int)api_->getMappingData().entries.size()) return;
     const auto& entry = api_->getMappingData().entries[entryIndex];
     const auto& ci = entry.classInfo;
 
-    const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNamesRight);
+    const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(
+        mcobfF::SettingKey::ShowIntermediaryNamesRight);
     const bool showObfRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowObfNamesRight);
     const bool showSrgRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNamesRight);
 
+    if (decompiledEntryIndex_ != entryIndex)
+    {
+        decompiledSource_.clear();
+        decompileError_.clear();
+        decompiling_ = false;
+        methodDecompiledSource_.clear();
+        methodDecompileError_.clear();
+        methodDecompiling_ = false;
+        methodDecompiledEntryIndex_ = -1;
+        methodDecompiledMemberIndex_ = -1;
+
+        if (api_&& api_
+        ->
+        hasDecompiledCache(ci.obfClass)
+        )
+        {
+            std::string cacheDir = api_->getDecompileCacheDir();
+            std::string cachePath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.obfClass);
+            auto content = mcobfF::FileSystem::readFile(cachePath);
+            if (content && !content->empty())
+            {
+                decompiledSource_ = std::move(*content);
+            }
+        }
+        decompiledEntryIndex_ = entryIndex;
+    }
+
     // Class Info Table with animation
     float alpha = classInfoAnim_;
-    if (alpha > 0.001f) {
+    if (alpha > 0.001f)
+    {
         float easedAlpha = easeOutCubic(alpha);
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, easedAlpha);
-        
-        // Animated height offset
+
         float yOffset = (1.0f - easedAlpha) * 15.0f;
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
 
         ImGui::Text("Class Details");
         ImGui::Separator();
 
-        if (ImGui::BeginTable("ClassInfo", 2, ImGuiTableFlags_RowBg)) {
+        if (ImGui::BeginTable("ClassInfo", 2, ImGuiTableFlags_RowBg))
+        {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
-            ImGui::TableNextColumn(); CopyableText(ci.deobfClass.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("Deobfuscated");
+            ImGui::TableNextColumn();
+            CopyableText(ci.deobfClass.c_str());
 
-            if (showObfRight) {
+            if (showObfRight)
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("Official");
-                ImGui::TableNextColumn(); CopyableText(ci.obfClass.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("Official");
+                ImGui::TableNextColumn();
+                CopyableText(ci.obfClass.c_str());
             }
 
-            if (showSrgRight && ci.srgClass) {
+            if (showSrgRight && ci.srgClass)
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("SRG");
-                ImGui::TableNextColumn(); CopyableText(ci.srgClass->c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("SRG");
+                ImGui::TableNextColumn();
+                CopyableText(ci.srgClass->c_str());
             }
 
-            if (showIntermediaryRight && ci.intermediaryClass) {
+            if (showIntermediaryRight && ci.intermediaryClass)
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("Intermediary");
-                ImGui::TableNextColumn(); CopyableText(ci.intermediaryClass->c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("Intermediary");
+                ImGui::TableNextColumn();
+                CopyableText(ci.intermediaryClass->c_str());
             }
 
             ImGui::EndTable();
         }
+
         ImGui::PopStyleVar();
     }
 
@@ -1609,10 +2041,11 @@ void AppState::renderClassDetails(int entryIndex) {
 
     // Methods Table with animation
     alpha = methodsAnim_;
-    if (alpha > 0.001f) {
+    if (alpha > 0.001f)
+    {
         float easedAlpha = easeOutCubic(alpha);
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, easedAlpha);
-        
+
         float yOffset = (1.0f - easedAlpha) * 15.0f;
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
 
@@ -1631,38 +2064,56 @@ void AppState::renderClassDetails(int entryIndex) {
             ImGui::TableSetupColumn("Descriptor");
             ImGui::TableHeadersRow();
 
-            for (size_t i = 0; i < entry.methods.size(); i++) {
+            for (size_t i = 0; i < entry.methods.size(); i++)
+            {
                 const auto& m = entry.methods[i];
                 ImGui::TableNextRow();
-                auto navToMethod = [&]() {
-                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+                auto navToMethod = [&]()
+                {
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
+                    {
                         selection_.type = Selection::Method;
                         selection_.memberIndex = (int)i;
                     }
                 };
-                ImGui::TableNextColumn(); CopyableText(m.deobfName.c_str()); navToMethod();
-                if (showObfRight) {
-                    ImGui::TableNextColumn(); CopyableText(m.obfName.c_str()); navToMethod();
-                }
-                if (showIntermediaryRight) {
+                ImGui::TableNextColumn();
+                CopyableText(m.deobfName.c_str());
+                navToMethod();
+                if (showObfRight)
+                {
                     ImGui::TableNextColumn();
-                    if (m.intermediaryName) {
+                    CopyableText(m.obfName.c_str());
+                    navToMethod();
+                }
+                if (showIntermediaryRight)
+                {
+                    ImGui::TableNextColumn();
+                    if (m.intermediaryName)
+                    {
                         CopyableText(m.intermediaryName->c_str());
-                    } else {
+                    }
+                    else
+                    {
                         ImGui::TextDisabled("-");
                     }
                     navToMethod();
                 }
-                if (showSrgRight) {
+                if (showSrgRight)
+                {
                     ImGui::TableNextColumn();
-                    if (m.srgName) {
+                    if (m.srgName)
+                    {
                         CopyableText(m.srgName->c_str());
-                    } else {
+                    }
+                    else
+                    {
                         ImGui::TextDisabled("-");
                     }
                     navToMethod();
                 }
-                ImGui::TableNextColumn(); CopyableText(m.jvmDescriptor.c_str()); navToMethod();
+                ImGui::TableNextColumn();
+                CopyableText(m.jvmDescriptor.c_str());
+                navToMethod();
             }
             ImGui::EndTable();
         }
@@ -1673,10 +2124,11 @@ void AppState::renderClassDetails(int entryIndex) {
 
     // Fields Table with animation
     alpha = fieldsAnim_;
-    if (alpha > 0.001f) {
+    if (alpha > 0.001f)
+    {
         float easedAlpha = easeOutCubic(alpha);
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, easedAlpha);
-        
+
         float yOffset = (1.0f - easedAlpha) * 15.0f;
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
 
@@ -1695,117 +2147,214 @@ void AppState::renderClassDetails(int entryIndex) {
             ImGui::TableSetupColumn("Type");
             ImGui::TableHeadersRow();
 
-            for (size_t i = 0; i < entry.fields.size(); i++) {
+            for (size_t i = 0; i < entry.fields.size(); i++)
+            {
                 const auto& f = entry.fields[i];
                 ImGui::TableNextRow();
-                auto navToField = [&]() {
-                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+                auto navToField = [&]()
+                {
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
+                    {
                         selection_.type = Selection::Field;
                         selection_.memberIndex = (int)i;
                     }
                 };
-                ImGui::TableNextColumn(); CopyableText(f.deobfName.c_str()); navToField();
-                if (showObfRight) {
-                    ImGui::TableNextColumn(); CopyableText(f.obfName.c_str()); navToField();
-                }
-                if (showIntermediaryRight) {
+                ImGui::TableNextColumn();
+                CopyableText(f.deobfName.c_str());
+                navToField();
+                if (showObfRight)
+                {
                     ImGui::TableNextColumn();
-                    if (f.intermediaryName) {
+                    CopyableText(f.obfName.c_str());
+                    navToField();
+                }
+                if (showIntermediaryRight)
+                {
+                    ImGui::TableNextColumn();
+                    if (f.intermediaryName)
+                    {
                         CopyableText(f.intermediaryName->c_str());
-                    } else {
+                    }
+                    else
+                    {
                         ImGui::TextDisabled("-");
                     }
                     navToField();
                 }
-                if (showSrgRight) {
+                if (showSrgRight)
+                {
                     ImGui::TableNextColumn();
-                    if (f.srgName) {
+                    if (f.srgName)
+                    {
                         CopyableText(f.srgName->c_str());
-                    } else {
+                    }
+                    else
+                    {
                         ImGui::TextDisabled("-");
                     }
                     navToField();
                 }
-                ImGui::TableNextColumn(); CopyableText(f.type.c_str()); navToField();
+                ImGui::TableNextColumn();
+                CopyableText(f.type.c_str());
+                navToField();
             }
             ImGui::EndTable();
         }
         ImGui::PopStyleVar();
     }
+
+    // Decompile section: button / status / source (at bottom)
+    if (decompiledSource_.empty() && !decompiling_)
+    {
+        if (ImGui::Button("Decompile Class"))
+        {
+            decompiling_ = true;
+            decompileError_.clear();
+            std::string className = ci.obfClass;
+            decompileFuture_ = std::async(std::launch::async, [this, className]() -> std::optional<std::string>
+            {
+                if (shuttingDown_) return std::nullopt;
+                return api_->decompileAndRemapClass(className);
+            });
+        }
+    }
+    else if (decompiling_)
+    {
+        ImGui::Text("Decompiling...");
+    }
+
+    if (!decompileError_.empty())
+    {
+        ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "%s", decompileError_.c_str());
+    }
+
+    if (!decompiledSource_.empty())
+    {
+        ImGui::Separator();
+        ImGui::Text("Decompiled Source");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Copy"))
+        {
+            ImGui::SetClipboardText(decompiledSource_.c_str());
+        }
+        if (ImGui::BeginChild("DecompiledSource", ImVec2(0, 300), true))
+        {
+            ImGui::TextUnformatted(decompiledSource_.c_str());
+            if (ImGui::BeginPopupContextItem("copySource"))
+            {
+                if (ImGui::MenuItem("Copy All"))
+                {
+                    ImGui::SetClipboardText(decompiledSource_.c_str());
+                }
+                ImGui::EndPopup();
+            }
+        }
+        ImGui::EndChild();
+    }
 }
 
-void AppState::renderMethodDetails(int entryIndex, int memberIndex) {
+void AppState::renderMethodDetails(int entryIndex, int memberIndex)
+{
     if (entryIndex < 0 || entryIndex >= (int)api_->getMappingData().entries.size()) return;
     const auto& entry = api_->getMappingData().entries[entryIndex];
     if (memberIndex < 0 || memberIndex >= (int)entry.methods.size()) return;
     const auto& m = entry.methods[memberIndex];
 
-    const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNamesRight);
+    const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(
+        mcobfF::SettingKey::ShowIntermediaryNamesRight);
     const bool showObfRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowObfNamesRight);
     const bool showSrgRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNamesRight);
 
     float alpha = methodInfoAnim_;
-    if (alpha > 0.001f) {
+    if (alpha > 0.001f)
+    {
         float easedAlpha = easeOutCubic(alpha);
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, easedAlpha);
-        
+
         float yOffset = (1.0f - easedAlpha) * 15.0f;
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
 
         ImGui::Text("Method Details");
         ImGui::Separator();
 
-        if (ImGui::BeginTable("MethodInfo", 2, ImGuiTableFlags_RowBg)) {
+        if (ImGui::BeginTable("MethodInfo", 2, ImGuiTableFlags_RowBg))
+        {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
-            ImGui::TableNextColumn(); CopyableText(m.deobfName.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("Deobfuscated");
+            ImGui::TableNextColumn();
+            CopyableText(m.deobfName.c_str());
 
-            if (showObfRight) {
+            if (showObfRight)
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("Official");
-                ImGui::TableNextColumn(); CopyableText(m.obfName.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("Official");
+                ImGui::TableNextColumn();
+                CopyableText(m.obfName.c_str());
             }
 
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Descriptor");
-            ImGui::TableNextColumn(); CopyableText(m.jvmDescriptor.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("Descriptor");
+            ImGui::TableNextColumn();
+            CopyableText(m.jvmDescriptor.c_str());
 
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Return Type");
-            ImGui::TableNextColumn(); CopyableText(m.returnType.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("Return Type");
+            ImGui::TableNextColumn();
+            CopyableText(m.returnType.c_str());
 
-            if (!m.paramTypes.empty()) {
+            if (!m.paramTypes.empty())
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("Parameters");
+                ImGui::TableNextColumn();
+                ImGui::Text("Parameters");
                 std::string params;
-                for (size_t i = 0; i < m.paramTypes.size(); i++) {
+                for (size_t i = 0; i < m.paramTypes.size(); i++)
+                {
                     if (i > 0) params += ", ";
                     params += m.paramTypes[i];
                 }
-                ImGui::TableNextColumn(); CopyableText(params.c_str());
+                ImGui::TableNextColumn();
+                CopyableText(params.c_str());
             }
 
-            if (showSrgRight && m.srgName) {
+            if (showSrgRight && m.srgName)
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("SRG");
-                ImGui::TableNextColumn(); CopyableText(m.srgName->c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("SRG");
+                ImGui::TableNextColumn();
+                CopyableText(m.srgName->c_str());
             }
 
-            if (showIntermediaryRight && m.intermediaryName) {
+            if (showIntermediaryRight && m.intermediaryName)
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("Intermediary");
-                ImGui::TableNextColumn(); CopyableText(m.intermediaryName->c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("Intermediary");
+                ImGui::TableNextColumn();
+                CopyableText(m.intermediaryName->c_str());
             }
 
-            if (m.startLine) {
+            if (m.startLine)
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("Line Range");
-                if (m.endLine) {
+                ImGui::TableNextColumn();
+                ImGui::Text("Line Range");
+                if (m.endLine)
+                {
                     std::string lineRange = std::to_string(*m.startLine) + " - " + std::to_string(*m.endLine);
-                    ImGui::TableNextColumn(); CopyableText(lineRange.c_str());
-                } else {
+                    ImGui::TableNextColumn();
+                    CopyableText(lineRange.c_str());
+                }
+                else
+                {
                     std::string lineRange = std::to_string(*m.startLine);
-                    ImGui::TableNextColumn(); CopyableText(lineRange.c_str());
+                    ImGui::TableNextColumn();
+                    CopyableText(lineRange.c_str());
                 }
             }
 
@@ -1814,68 +2363,312 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex) {
 
         ImGui::Spacing();
         ImGui::Text("Class: %s", entry.classInfo.deobfClass.c_str());
-        if (ImGui::Button("Show Class")) {
+        if (ImGui::Button("Show Class"))
+        {
             selection_.type = Selection::Class;
             selection_.entryIndex = entryIndex;
             selection_.memberIndex = -1;
         }
-        
+
         ImGui::PopStyleVar();
+    }
+
+    // --- Method-level decompiled source ---
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Text("Decompiled Source");
+    ImGui::Spacing();
+
+    // Reset if a different method was selected
+    if (methodDecompiledEntryIndex_ != entryIndex || methodDecompiledMemberIndex_ != memberIndex)
+    {
+        methodDecompiledSource_.clear();
+        methodDecompileError_.clear();
+        methodDecompiling_ = false;
+        methodDecompiledEntryIndex_ = entryIndex;
+        methodDecompiledMemberIndex_ = memberIndex;
+    }
+
+    // Helper: extract method from full class source using the parser
+    auto extractMethodWithParser = [&](const std::string& fullSource) -> std::optional<std::string>
+    {
+        if (fullSource.empty()) return std::nullopt;
+
+        // Use the parser to extract the method by name + descriptor
+        std::string searchName = !m.deobfName.empty() ? m.deobfName : m.obfName;
+        if (searchName.empty()) return std::nullopt;
+
+        auto extracted = mcobfF::JavaMethodParser::extractMethod(fullSource, searchName, m.jvmDescriptor);
+        if (extracted)
+        {
+            // Add line numbers to the extracted source
+            std::istringstream stream(*extracted);
+            std::string line;
+            std::vector<std::string> lines;
+            while (std::getline(stream, line))
+            {
+                lines.push_back(line);
+            }
+            if (lines.empty()) return std::nullopt;
+
+            // Find the starting line number in the full source
+            int startLine = 1;
+            if (!lines.empty() && !fullSource.empty())
+            {
+                size_t methodPos = fullSource.find(lines[0]);
+                if (methodPos != std::string::npos)
+                {
+                    startLine = 1;
+                    for (size_t i = 0; i < methodPos; i++)
+                    {
+                        if (fullSource[i] == '\n') startLine++;
+                    }
+                }
+            }
+
+            std::ostringstream oss;
+            int maxLineNum = startLine + (int)lines.size() - 1;
+            int lineNumWidth = 1;
+            while (maxLineNum >= 10)
+            {
+                maxLineNum /= 10;
+                lineNumWidth++;
+            }
+
+            for (int i = 0; i < (int)lines.size(); i++)
+            {
+                oss << std::setw(lineNumWidth) << std::right << (startLine + i)
+                    << " | " << lines[i] << "\n";
+            }
+            return oss.str();
+        }
+        return std::nullopt;
+    };
+
+    // Check if we need to trigger decompilation
+    bool needDecompile = methodDecompiledSource_.empty() && !methodDecompiling_ && methodDecompileError_.empty();
+
+    if (needDecompile && api_)
+    {
+        const auto& ci = entry.classInfo;
+        // Check if the class is already decompiled (cache or in-memory)
+        if (decompiledEntryIndex_ == entryIndex && !decompiledSource_.empty())
+        {
+            // Use the already loaded class source
+            auto extracted = extractMethodWithParser(decompiledSource_);
+            if (extracted)
+            {
+                methodDecompiledSource_ = std::move(*extracted);
+            }
+            else
+            {
+                methodDecompileError_ = "Could not extract method source. Method '" + (
+                    !m.deobfName.empty() ? m.deobfName : m.obfName) + "' not found in decompiled source.";
+            }
+        }
+        else if (api_->hasDecompiledCache(ci.obfClass))
+        {
+            // Load from cache and extract
+            std::string cacheDir = api_->getDecompileCacheDir();
+            std::string cachePath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.obfClass);
+            auto content = mcobfF::FileSystem::readFile(cachePath);
+            if (content && !content->empty())
+            {
+                auto extracted = extractMethodWithParser(*content);
+                if (extracted)
+                {
+                    methodDecompiledSource_ = std::move(*extracted);
+                }
+                else
+                {
+                    methodDecompileError_ = "Could not extract method source. Method '" + (
+                        !m.deobfName.empty() ? m.deobfName : m.obfName) + "' not found in decompiled source.";
+                }
+            }
+            else
+            {
+                methodDecompileError_ = "Failed to read cached decompiled source.";
+            }
+        }
+        else
+        {
+            // Need to decompile the class first
+            methodDecompiling_ = true;
+            methodDecompileError_.clear();
+            std::string className = ci.obfClass;
+            methodDecompileFuture_ = std::async(std::launch::async,
+                                                [this, className, entryIndex, memberIndex
+                                                ]() -> std::optional<std::string>
+                                                {
+                                                    if (shuttingDown_) return std::nullopt;
+                                                    auto source = api_->decompileAndRemapClass(className);
+                                                    if (!source) return std::optional<std::string>(std::nullopt);
+
+                                                    // Verify indices are still valid (user might have switched versions)
+                                                    const auto& data = api_->getMappingData();
+                                                    if (entryIndex >= (int)data.entries.size()) return std::optional<
+                                                        std::string>(std::nullopt);
+                                                    const auto& e = data.entries[entryIndex];
+                                                    if (memberIndex >= (int)e.methods.size()) return std::optional<
+                                                        std::string>(std::nullopt);
+                                                    const auto& method = e.methods[memberIndex];
+
+                                                    std::string searchName = !method.deobfName.empty()
+                                                                                 ? method.deobfName
+                                                                                 : method.obfName;
+                                                    if (searchName.empty()) return std::optional<std::string>(
+                                                        std::nullopt);
+
+                                                    auto extracted = mcobfF::JavaMethodParser::extractMethod(
+                                                        *source, searchName, method.jvmDescriptor);
+                                                    if (!extracted) return std::optional<std::string>(std::nullopt);
+
+                                                    // Add line numbers
+                                                    std::istringstream stream(*extracted);
+                                                    std::string line;
+                                                    std::vector<std::string> lines;
+                                                    while (std::getline(stream, line))
+                                                    {
+                                                        lines.push_back(line);
+                                                    }
+                                                    if (lines.empty()) return std::optional<std::string>(std::nullopt);
+
+                                                    int startLine = 1;
+                                                    size_t methodPos = source->find(lines[0]);
+                                                    if (methodPos != std::string::npos)
+                                                    {
+                                                        for (size_t i = 0; i < methodPos; i++)
+                                                        {
+                                                            if ((*source)[i] == '\n') startLine++;
+                                                        }
+                                                    }
+
+                                                    std::ostringstream oss;
+                                                    int maxLineNum = startLine + (int)lines.size() - 1;
+                                                    int lineNumWidth = 1;
+                                                    while (maxLineNum >= 10)
+                                                    {
+                                                        maxLineNum /= 10;
+                                                        lineNumWidth++;
+                                                    }
+
+                                                    for (int i = 0; i < (int)lines.size(); i++)
+                                                    {
+                                                        oss << std::setw(lineNumWidth) << std::right << (startLine + i)
+                                                            << " | " << lines[i] << "\n";
+                                                    }
+                                                    return std::optional<std::string>(oss.str());
+                                                });
+        }
+    }
+
+    if (methodDecompiling_)
+    {
+        ImGui::Text("Decompiling class to extract method source...");
+    }
+
+    if (!methodDecompileError_.empty())
+    {
+        ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "%s", methodDecompileError_.c_str());
+        if (ImGui::Button("Show Full Class"))
+        {
+            selection_.type = Selection::Class;
+            selection_.entryIndex = entryIndex;
+            selection_.memberIndex = -1;
+        }
+    }
+
+    if (!methodDecompiledSource_.empty())
+    {
+        ImGui::TextDisabled("Parsed from decompiled class source (annotations included)");
+        if (ImGui::BeginChild("MethodDecompiledSource", ImVec2(0, 300), true))
+        {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+            ImGui::TextUnformatted(methodDecompiledSource_.c_str());
+            ImGui::PopStyleVar();
+        }
+        ImGui::EndChild();
+        if (ImGui::Button("Show Full Class"))
+        {
+            selection_.type = Selection::Class;
+            selection_.entryIndex = entryIndex;
+            selection_.memberIndex = -1;
+        }
     }
 }
 
-void AppState::renderFieldDetails(int entryIndex, int memberIndex) {
+void AppState::renderFieldDetails(int entryIndex, int memberIndex)
+{
     if (entryIndex < 0 || entryIndex >= (int)api_->getMappingData().entries.size()) return;
     const auto& entry = api_->getMappingData().entries[entryIndex];
     if (memberIndex < 0 || memberIndex >= (int)entry.fields.size()) return;
     const auto& f = entry.fields[memberIndex];
 
-    const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowIntermediaryNamesRight);
+    const bool showIntermediaryRight = mcobfF::Settings::instance().get<bool>(
+        mcobfF::SettingKey::ShowIntermediaryNamesRight);
     const bool showObfRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowObfNamesRight);
     const bool showSrgRight = mcobfF::Settings::instance().get<bool>(mcobfF::SettingKey::ShowSrgNamesRight);
 
     float alpha = fieldInfoAnim_;
-    if (alpha > 0.001f) {
+    if (alpha > 0.001f)
+    {
         float easedAlpha = easeOutCubic(alpha);
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, easedAlpha);
-        
+
         float yOffset = (1.0f - easedAlpha) * 15.0f;
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + yOffset);
 
         ImGui::Text("Field Details");
         ImGui::Separator();
 
-        if (ImGui::BeginTable("FieldInfo", 2, ImGuiTableFlags_RowBg)) {
+        if (ImGui::BeginTable("FieldInfo", 2, ImGuiTableFlags_RowBg))
+        {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Deobfuscated");
-            ImGui::TableNextColumn(); CopyableText(f.deobfName.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("Deobfuscated");
+            ImGui::TableNextColumn();
+            CopyableText(f.deobfName.c_str());
 
-            if (showObfRight) {
+            if (showObfRight)
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("Official");
-                ImGui::TableNextColumn(); CopyableText(f.obfName.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("Official");
+                ImGui::TableNextColumn();
+                CopyableText(f.obfName.c_str());
             }
 
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("Type");
-            ImGui::TableNextColumn(); CopyableText(f.type.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("Type");
+            ImGui::TableNextColumn();
+            CopyableText(f.type.c_str());
 
-            if (showSrgRight && f.srgName) {
+            if (showSrgRight && f.srgName)
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("SRG");
-                ImGui::TableNextColumn(); CopyableText(f.srgName->c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("SRG");
+                ImGui::TableNextColumn();
+                CopyableText(f.srgName->c_str());
             }
 
-            if (showIntermediaryRight && f.intermediaryName) {
+            if (showIntermediaryRight && f.intermediaryName)
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("Intermediary");
-                ImGui::TableNextColumn(); CopyableText(f.intermediaryName->c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("Intermediary");
+                ImGui::TableNextColumn();
+                CopyableText(f.intermediaryName->c_str());
             }
 
-            if (f.lineNumber) {
+            if (f.lineNumber)
+            {
                 ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::Text("Line");
-                ImGui::TableNextColumn(); CopyableText(std::to_string(*f.lineNumber).c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("Line");
+                ImGui::TableNextColumn();
+                CopyableText(std::to_string(*f.lineNumber).c_str());
             }
 
             ImGui::EndTable();
@@ -1883,12 +2676,13 @@ void AppState::renderFieldDetails(int entryIndex, int memberIndex) {
 
         ImGui::Spacing();
         ImGui::Text("Class: %s", entry.classInfo.deobfClass.c_str());
-        if (ImGui::Button("Show Class")) {
+        if (ImGui::Button("Show Class"))
+        {
             selection_.type = Selection::Class;
             selection_.entryIndex = entryIndex;
             selection_.memberIndex = -1;
         }
-        
+
         ImGui::PopStyleVar();
     }
 }

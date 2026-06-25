@@ -5,6 +5,8 @@
 #include <optional>
 #include <memory>
 #include <future>
+#include <atomic>
+#include <mutex>
 #include "mcobfF/class/ClassInfo.h"
 #include "mcobfF/mapping/MappingData.h"
 
@@ -12,6 +14,7 @@ namespace mcobfF
 {
     class MappingResolver;
     class ZipArchive;
+    class FernflowerDecompiler;
 
     class api
     {
@@ -51,12 +54,40 @@ namespace mcobfF
         bool isMappingLoaded() const;
         const std::string& getCurrentVersion() const;
 
+        bool initializeDecompiler();
+        std::optional<std::string> decompileClass(const std::string& className);
+        std::optional<std::string> decompileAndRemapClass(const std::string& className);
+        bool isDecompilerAvailable() const;
+
+        void startDecompileAllAsync();
+        void cancelDecompileAll();
+        bool isDecompilingAll() const;
+        float getDecompileProgress() const;
+
+        const std::string& getCurrentJarPath() const { return currentJarPath_; }
+        std::string getDecompileCacheDir() const;
+        bool hasDecompiledCache(const std::string& className) const;
+        const std::string& getMappingFilePath() const { return mappingFilePath_; }
+
     private:
+        void generateMappingFile();
+        bool downloadMinecraftRemapper();
+        bool remapJar();
+        std::string getToolsDir() const;
         std::unique_ptr<MappingResolver> resolver_;
         std::unique_ptr<ZipArchive> zip_;
+        std::unique_ptr<FernflowerDecompiler> decompiler_;
         ClassHierarchy hierarchy_;
         std::string cacheDir_;
         std::string currentVersion_;
+        std::string currentJarPath_;
         std::future<bool> srgFuture_;
+        std::future<bool> batchDecompileFuture_;
+        std::string mappingFilePath_;
+        std::string minecraftRemapperPath_;
+        std::atomic<bool> decompilingAll_{false};
+        std::atomic<bool> cancelled_{false};
+        std::atomic<float> decompileProgress_{0.0f};
+        std::mutex decompileMutex_;
     };
 } // namespace mc

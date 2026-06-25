@@ -166,4 +166,209 @@ namespace mcobfF
 
         return true;
     }
+
+    bool SRGParser::isOldSrgFormat(const std::string& content)
+    {
+        std::istringstream stream(content);
+        std::string line;
+        while (std::getline(stream, line))
+        {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+            if (line.rfind("CL:", 0) == 0 || line.rfind("FD:", 0) == 0 ||
+                line.rfind("MD:", 0) == 0 || line.rfind("PK:", 0) == 0)
+            {
+                return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    bool SRGParser::parseOldSrg(const std::string& content, MappingData& mappings)
+    {
+        std::istringstream stream(content);
+        std::string line;
+
+        while (std::getline(stream, line))
+        {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+
+            if (line.rfind("CL: ", 0) == 0)
+            {
+                std::istringstream iss(line.substr(4));
+                std::string obfClass, srgClass;
+                iss >> obfClass >> srgClass;
+                if (obfClass.empty() || srgClass.empty()) continue;
+
+                ClassMapping cm;
+                cm.obfClass = obfClass;
+                cm.deobfClass = srgClass;
+                cm.srgClass = srgClass;
+
+                mappings.entries.push_back({cm, {}, {}});
+                size_t idx = mappings.entries.size() - 1;
+                mappings.obfClassIndex[obfClass] = idx;
+                mappings.deobfClassIndex[srgClass] = idx;
+            }
+            else if (line.rfind("FD: ", 0) == 0)
+            {
+                std::istringstream iss(line.substr(4));
+                std::string obfFull, srgFull;
+                iss >> obfFull >> srgFull;
+                if (obfFull.empty() || srgFull.empty()) continue;
+
+                size_t obfLastSlash = obfFull.rfind('/');
+                std::string obfClass = (obfLastSlash != std::string::npos) ? obfFull.substr(0, obfLastSlash) : obfFull;
+                std::string obfField = (obfLastSlash != std::string::npos) ? obfFull.substr(obfLastSlash + 1) : obfFull;
+
+                size_t srgLastSlash = srgFull.rfind('/');
+                std::string srgField = (srgLastSlash != std::string::npos) ? srgFull.substr(srgLastSlash + 1) : srgFull;
+
+                auto it = mappings.obfClassIndex.find(obfClass);
+                if (it == mappings.obfClassIndex.end()) continue;
+
+                auto& entry = mappings.entries[it->second];
+                bool found = false;
+                for (auto& f : entry.fields)
+                {
+                    if (f.obfName == obfField)
+                    {
+                        f.srgName = srgField;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                {
+                    FieldMapping fm;
+                    fm.obfName = obfField;
+                    fm.deobfName = srgField;
+                    fm.srgName = srgField;
+                    entry.fields.push_back(std::move(fm));
+                }
+            }
+            else if (line.rfind("MD: ", 0) == 0)
+            {
+                std::istringstream iss(line.substr(4));
+                std::string obfFull, obfDesc, srgFull, srgDesc;
+                iss >> obfFull >> obfDesc >> srgFull >> srgDesc;
+                if (obfFull.empty() || obfDesc.empty() || srgFull.empty()) continue;
+
+                size_t obfLastSlash = obfFull.rfind('/');
+                std::string obfClass = (obfLastSlash != std::string::npos) ? obfFull.substr(0, obfLastSlash) : obfFull;
+                std::string obfMethod = (obfLastSlash != std::string::npos)
+                                            ? obfFull.substr(obfLastSlash + 1)
+                                            : obfFull;
+
+                size_t srgLastSlash = srgFull.rfind('/');
+                std::string srgMethod = (srgLastSlash != std::string::npos)
+                                            ? srgFull.substr(srgLastSlash + 1)
+                                            : srgFull;
+
+                auto it = mappings.obfClassIndex.find(obfClass);
+                if (it == mappings.obfClassIndex.end()) continue;
+
+                auto& entry = mappings.entries[it->second];
+                std::string remappedDesc = remapDescriptor(obfDesc, mappings);
+
+                bool found = false;
+                for (auto& m : entry.methods)
+                {
+                    if (m.obfName == obfMethod && m.jvmDescriptor == remappedDesc)
+                    {
+                        m.srgName = srgMethod;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                {
+                    MethodMapping mm;
+                    mm.obfName = obfMethod;
+                    mm.deobfName = srgMethod;
+                    mm.jvmDescriptor = remappedDesc;
+                    mm.srgName = srgMethod;
+                    parseDescriptor(remappedDesc, mm.returnType, mm.paramTypes);
+                    entry.methods.push_back(std::move(mm));
+                }
+            }
+        }
+
+        return !mappings.entries.empty();
+    }
+
+    bool SRGParser::parseTsrg(const std::string& content, MappingData& mappings)
+    {
+        std::istringstream stream(content);
+        std::string line;
+        MappingEntry* currentEntry = nullptr;
+
+        while (std::getline(stream, line))
+        {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+            if (line.rfind("tsrg2", 0) == 0) continue;
+
+            int tabs = 0;
+            while (tabs < (int)line.size() && line[tabs] == '\t') tabs++;
+            std::string trimmed = line.substr(tabs);
+
+            std::vector<std::string> tokens;
+            std::istringstream iss(trimmed);
+            std::string token;
+            while (iss >> token) tokens.push_back(token);
+
+            if (tokens.empty()) continue;
+
+            if (tabs == 0 && tokens.size() >= 2)
+            {
+                ClassMapping cm;
+                cm.obfClass = tokens[0];
+                cm.deobfClass = tokens[1];
+                cm.srgClass = tokens[1];
+
+                mappings.entries.push_back({cm, {}, {}});
+                size_t idx = mappings.entries.size() - 1;
+                mappings.obfClassIndex[tokens[0]] = idx;
+                mappings.deobfClassIndex[tokens[1]] = idx;
+                currentEntry = &mappings.entries[idx];
+            }
+            else if (tabs == 1 && currentEntry)
+            {
+                if (tokens.size() >= 3 && tokens[1].find('(') != std::string::npos)
+                {
+                    MethodMapping mm;
+                    mm.obfName = tokens[0];
+                    mm.deobfName = tokens[2];
+                    mm.jvmDescriptor = tokens[1];
+                    mm.srgName = tokens[2];
+                    parseDescriptor(mm.jvmDescriptor, mm.returnType, mm.paramTypes);
+                    currentEntry->methods.push_back(std::move(mm));
+                }
+                else if (tokens.size() >= 2)
+                {
+                    FieldMapping fm;
+                    fm.obfName = tokens[0];
+                    fm.deobfName = tokens[1];
+                    fm.srgName = tokens[1];
+                    currentEntry->fields.push_back(std::move(fm));
+                }
+            }
+        }
+
+        return !mappings.entries.empty();
+    }
+
+    bool SRGParser::parseStandalone(const std::string& content, MappingData& mappings)
+    {
+        if (content.empty()) return false;
+
+        if (isOldSrgFormat(content))
+        {
+            return parseOldSrg(content, mappings);
+        }
+        return parseTsrg(content, mappings);
+    }
 } // namespace mc

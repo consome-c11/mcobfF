@@ -9,9 +9,6 @@
 
 #pragma comment(lib, "winhttp.lib")
 
-#ifndef WINHTTP_REDIRECT_POLICY_AUTOMATIC
-#define WINHTTP_REDIRECT_POLICY_AUTOMATIC 0
-#endif
 
 namespace mcobfF
 {
@@ -135,7 +132,7 @@ namespace mcobfF
         }
 
 #ifdef WINHTTP_OPTION_REDIRECT_POLICY
-        DWORD redirectPolicy = WINHTTP_REDIRECT_POLICY_AUTOMATIC;
+        DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
         WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
 #endif
 

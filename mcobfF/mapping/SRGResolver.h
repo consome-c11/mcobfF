@@ -13,8 +13,12 @@ namespace mcobfF
         [[nodiscard]] static bool downloadAndLoad(const std::string& version, const std::string& cacheDir,
                                                   MappingData& mappings);
 
+        [[nodiscard]] static bool downloadAndLoadStandalone(const std::string& version, const std::string& cacheDir,
+                                                            MappingData& mappings);
+
+        [[nodiscard]] static bool isVersionPreMojmap(const std::string& version);
+
     private:
-        [[nodiscard]] static bool isVersionAtLeast1122(const std::string& version);
         [[nodiscard]] static std::string convertJoinedSrgToTsrg(const std::string& content);
     };
 } // namespace mc
