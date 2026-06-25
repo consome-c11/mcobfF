@@ -1,6 +1,12 @@
 # MC-OBF-Find (mcobfF)
 
-A C++20 GUI application and library for browsing Minecraft obfuscation mappings. Provides interactive exploration of Mojang mappings, SRG, and Fabric Intermediary with class hierarchy analysis from JAR files.
+This tool is an unofficial community project and is not affiliated with or endorsed by Mojang Studios, Microsoft, Minecraft Forge, or the Fabric Project.
+
+The copyright for each piece of mapping data obtained by this tool belongs to the respective projects (Mojang Studios, Fabric Project, Forge).
+
+Please do not publish or upload the dumped JSON file online.
+Redistributing official Mojang maps constitutes a breach of the ‘Minecraft’ End User Licence Agreement (EULA).
+Please use this solely for development in a local environment or for personal development purposes.
 
 ## Features
 

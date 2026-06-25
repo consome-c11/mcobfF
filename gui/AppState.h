@@ -120,6 +120,7 @@ private:
     std::string dumpError_;
     std::string dumpOutputPath_;
     std::future<bool> dumpFuture_;
+    bool showDumpConfirm_ = false;
 
     // Animation states
     float classInfoAnim_ = 0.0f;

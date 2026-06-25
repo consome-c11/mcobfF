@@ -494,6 +494,43 @@ void AppState::renderGui() {
         ImGui::EndPopup();
     }
 
+    if (showDumpConfirm_) {
+        ImGui::OpenPopup("Confirm Dump");
+        showDumpConfirm_ = false;
+    }
+    if (ImGui::BeginPopupModal("Confirm Dump", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "WARNING: EULA Compliance Required");
+        ImGui::Separator();
+        ImGui::Text("The generated JSON file contains Mojang Official Mappings.");
+        ImGui::Text("Do NOT upload, share, or redistribute this file publicly online.");
+        ImGui::Text("Please use this solely for local/personal development purposes.");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::Text("Output: %s", dumpOutputPath_.c_str());
+        ImGui::Spacing();
+
+        if (ImGui::Button("I Understand - Dump")) {
+            dumping_ = true;
+            dumpError_.clear();
+            dumpFuture_ = std::async(std::launch::async, [this]() -> bool {
+                try {
+                    return mcobfF::JarDumper::dumpFromVersion(selectedVersion_, dumpOutputPath_);
+                } catch (const std::exception& e) {
+                    dumpError_ = e.what();
+                    return false;
+                }
+            });
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            dumpOutputPath_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     if (versionSelectorOpen_) {
         renderVersionSelector();
         return;
@@ -786,16 +823,7 @@ void AppState::dumpRequested() {
 
     if (GetSaveFileNameW(&ofn)) {
         dumpOutputPath_ = std::filesystem::path(filename).string();
-        dumping_ = true;
-        dumpError_.clear();
-        dumpFuture_ = std::async(std::launch::async, [this]() -> bool {
-            try {
-                return mcobfF::JarDumper::dumpFromVersion(selectedVersion_, dumpOutputPath_);
-            } catch (const std::exception& e) {
-                dumpError_ = e.what();
-                return false;
-            }
-        });
+        showDumpConfirm_ = true;
     }
 }
 
