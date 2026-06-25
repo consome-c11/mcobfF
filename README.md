@@ -1,4 +1,4 @@
-# MC-OBF-Find (mcobfF)
+# MC-OBF-Finder (mcobfF)
 
 This tool is an unofficial community project and is not affiliated with or endorsed by Mojang Studios, Microsoft, Minecraft Forge, or the Fabric Project.
 
