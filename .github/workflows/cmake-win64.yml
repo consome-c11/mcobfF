@@ -3,6 +3,7 @@ name: CMake Win64 Auto Build
 on:
   push:
     branches: [ "master" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "master" ]
 
@@ -14,6 +15,15 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: Cache FetchContent
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ github.workspace }}/build/_deps
+        key: ${{ runner.os }}-fetchcontent-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-fetchcontent-
+
     - name: Configure CMake
       run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Release -A x64
 
@@ -21,7 +31,7 @@ jobs:
       run: cmake --build ${{github.workspace}}/build --config Release
 
     - name: Upload Artifact
-      uses: actions/artifacts@v4
+      uses: actions/upload-artifact@v4
       with:
-        name: win64-binary
+        name: mcobfF-win64-binary
         path: ${{github.workspace}}/build/Release/mcobfF.exe
