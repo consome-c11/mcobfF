@@ -29,5 +29,8 @@ namespace mcobfF
 
         static constexpr const char* JAR_REMAPPER_JAR_URL =
             "https://github.com/consome-c11/jarremapper/releases/download/0.0.1/jarremapper.jar";
+
+        static constexpr const char* JRE_ZIP_URL =
+            "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.19+10/OpenJDK17U-jre_x64_windows_hotspot_17.0.19_10.zip";
     };
 } // namespace mc

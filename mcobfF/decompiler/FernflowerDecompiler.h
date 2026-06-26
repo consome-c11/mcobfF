@@ -48,7 +48,12 @@ namespace mcobfF
         [[nodiscard]] static bool downloadFernflower(const std::string& outputPath);
 
         [[nodiscard]] static std::string getCachePath(const std::string& cacheDir,
-                                                      const std::string& className);
+                                                       const std::string& className);
+
+        [[nodiscard]] static bool hasCache(const std::string& cacheDir,
+                                           const std::string& className);
+        [[nodiscard]] static std::optional<std::string> readCached(const std::string& cacheDir,
+                                                                    const std::string& className);
 
     private:
         JavaVM* jvm_ = nullptr;

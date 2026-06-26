@@ -8,6 +8,7 @@
 #ifndef DWMWCP_ROUND
 #define DWMWCP_ROUND 2
 #endif
+#include <cstdio>
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
@@ -104,7 +105,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         return 0;
     case WM_CLOSE:
-        DestroyWindow(hWnd);
+        PostQuitMessage(0);
         return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -163,6 +164,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
 #endif
+
     WNDCLASSEX wc = {
         sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L,
         hInstance, nullptr, nullptr, nullptr, nullptr,
@@ -265,8 +267,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 
     io.Fonts->AddFontDefault();
 
-    AppState appState;
-    appState.setHwnd(hwnd);
+    AppState* appState = new AppState();
+    appState->setHwnd(hwnd);
 
     mcobfF::Settings::instance().applyThemeIfNeeded();
 
@@ -284,7 +286,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        appState.renderGui();
+        appState->renderGui();
 
         ImGui::Render();
         const auto theme = mcobfF::Settings::instance().getEffectiveTheme();
@@ -298,6 +300,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         g_pSwapChain->Present(1, 0);
     }
 
+    // Save settings before exit (AppState destructor will be skipped)
+    mcobfF::Settings::instance().save(appState->getConfigPath());
+
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -305,5 +310,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     DestroyWindow(hwnd);
     UnregisterClass(wc.lpszClassName, wc.hInstance);
 
-    return 0;
+    // HotSpot JVM leaves zombie native threads (GC, JIT compiler, etc.)
+    // even after DestroyJavaVM() returns. These threads prevent the CRT
+    // from completing process exit. ExitProcess() force-terminates them.
+    ExitProcess(0);
 }

@@ -1,5 +1,6 @@
 #include "AppState.h"
 #include "mcobfF/api/api.h"
+#include "mcobfF/network/JreDownloader.h"
 #include "mcobfF/network/VersionDownloader.h"
 #include "mcobfF/mapping/MappingData.h"
 #include "mcobfF/file/FileSystem.h"
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <future>
 #include <functional>
+#include <thread>
 #include <sstream>
 #include <cmath>
 #include <optional>
@@ -32,17 +34,15 @@ AppState::AppState()
     }
     mcobfF::Settings::instance().load(configPath_);
     startFetchManifest();
+    startJreCheck();
 }
 
 AppState::~AppState()
 {
-    shuttingDown_ = true;
-    if (manifestFuture_.valid()) manifestFuture_.wait();
-    if (loadFuture_.valid()) loadFuture_.wait();
-    if (dumpFuture_.valid()) dumpFuture_.wait();
-    if (decompileFuture_.valid()) decompileFuture_.wait();
-    if (methodDecompileFuture_.valid()) methodDecompileFuture_.wait();
-    mcobfF::Settings::instance().save(configPath_);
+    // Note: In main.cpp, AppState is intentionally leaked (not deleted)
+    // to avoid blocking on JVM shutdown. Settings are saved explicitly
+    // before ExitProcess(). This destructor is provided for completeness
+    // but is not called in normal execution.
 }
 
 void AppState::setHwnd(HWND hwnd)
@@ -60,6 +60,16 @@ void AppState::update()
         mcobfF::Settings::instance().clearDirty();
     }
 
+    if (jreFuture_.valid())
+    {
+        if (jreFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        {
+            bool ok = jreFuture_.get();
+            jreChecking_ = false;
+            jreReady_ = ok;
+            if (!ok) jreError_ = "Failed to detect or download a compatible JRE.";
+        }
+    }
     if (manifestFuture_.valid())
     {
         if (manifestFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
@@ -298,6 +308,24 @@ void AppState::updateAnimations(float deltaTime)
     }
 }
 
+void AppState::startJreCheck()
+{
+    if (mcobfF::JreDownloader::isJavaAvailable())
+    {
+        jreReady_ = true;
+        return;
+    }
+
+    jreChecking_ = true;
+    jreReady_ = false;
+    jreError_.clear();
+    jreFuture_ = std::async(std::launch::async, [this]() -> bool
+    {
+        if (shuttingDown_) return false;
+        return mcobfF::JreDownloader::ensureJre();
+    });
+}
+
 void AppState::startFetchManifest()
 {
     manifestFetching_ = true;
@@ -489,7 +517,30 @@ void AppState::buildTree()
         for (size_t m = 0; m < entry.methods.size(); m++)
         {
             TreeNode mn;
-            mn.name = entry.methods[m].deobfName + "(...)";
+            std::string methodName = entry.methods[m].deobfName;
+            if (methodName == "<clinit>")
+            {
+                mn.name = "static {}";
+            }
+            else if (methodName == "<init>")
+            {
+                std::string params;
+                for (size_t p = 0; p < entry.methods[m].paramTypes.size(); p++)
+                {
+                    if (p > 0) params += ", ";
+                    std::string pt = entry.methods[m].paramTypes[p];
+                    size_t ls = pt.rfind('/');
+                    if (ls != std::string::npos) pt = pt.substr(ls + 1);
+                    ls = pt.rfind('.');
+                    if (ls != std::string::npos) pt = pt.substr(ls + 1);
+                    params += pt;
+                }
+                mn.name = "<init>(" + params + ")";
+            }
+            else
+            {
+                mn.name = methodName + "(...)";
+            }
             mn.displayPath = current->displayPath + "/m" + std::to_string(m);
             mn.type = TreeNode::Method;
             mn.entryIndex = i;
@@ -578,6 +629,56 @@ void AppState::buildTree()
 void AppState::renderGui()
 {
     update();
+
+    // JRE dependency check popup
+    if (jreChecking_)
+    {
+        ImGui::OpenPopup("Preparing Dependencies");
+    }
+
+    if (ImGui::BeginPopupModal("Preparing Dependencies", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        if (!jreChecking_)
+        {
+            ImGui::CloseCurrentPopup();
+        }
+        else
+        {
+            ImGui::Text("Downloading required dependencies...");
+            ImGui::Separator();
+            ImGui::Text("Checking for compatible Java runtime...");
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                               "If no Java is found, Eclipse Temurin JRE 17\n"
+                               "will be downloaded automatically.");
+        }
+        ImGui::EndPopup();
+    }
+
+    if (!jreError_.empty())
+    {
+        ImGui::OpenPopup("JRE Error");
+    }
+    if (ImGui::BeginPopupModal("JRE Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("Error: %s", jreError_.c_str());
+        ImGui::Separator();
+        ImGui::TextWrapped("Please install Java 17+ manually or set the JAVA_HOME environment variable.");
+        if (ImGui::Button("Retry"))
+        {
+            jreError_.clear();
+            startJreCheck();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Exit"))
+        {
+            PostQuitMessage(0);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     renderTitleBar();
 
     if (loading_)
@@ -761,7 +862,7 @@ void AppState::renderGui()
         ImGui::Separator();
         if (ImGui::MenuItem("Exit"))
         {
-            DestroyWindow(hwnd_);
+            PostQuitMessage(0);
         }
         ImGui::EndPopup();
     }
@@ -857,7 +958,7 @@ void AppState::renderTitleBar()
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.85f, 0.05f, 0.05f, 1.0f));
     if (ImGui::Button("##Close", ImVec2(btnW, titleBarHeight)))
     {
-        DestroyWindow(hwnd_);
+        PostQuitMessage(0);
     }
     ImGui::PopStyleColor(3);
 
@@ -1469,6 +1570,7 @@ void AppState::renderLeftPanel()
                             selection_.entryIndex == fn.node->entryIndex &&
                             selection_.memberIndex == fn.node->memberIndex);
 
+                ImGui::PushID(fn.node->displayPath.c_str());
                     if (ImGui::Selectable(fn.displayName.c_str(), sel))
                     {
                         if (fn.type == TreeNode::Method)
@@ -1482,6 +1584,7 @@ void AppState::renderLeftPanel()
                         selection_.entryIndex = fn.node->entryIndex;
                         selection_.memberIndex = fn.node->memberIndex;
                     }
+                    ImGui::PopID();
                     break;
                 }
             default: break;
@@ -1857,12 +1960,14 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
                     bool sel = selection_.type == Selection::Method &&
                         selection_.entryIndex == child.entryIndex &&
                         selection_.memberIndex == child.memberIndex;
+                    ImGui::PushID((std::to_string(child.entryIndex) + "_m" + std::to_string(child.memberIndex)).c_str());
                     if (ImGui::Selectable(("  " + childDisplay).c_str(), sel))
                     {
                         selection_.type = Selection::Method;
                         selection_.entryIndex = child.entryIndex;
                         selection_.memberIndex = child.memberIndex;
                     }
+                    ImGui::PopID();
                 }
                 else if (child.type == TreeNode::Field)
                 {
@@ -1882,12 +1987,14 @@ void AppState::renderTreeNode(TreeNode& node, const std::string& classFilter, co
                     bool sel = selection_.type == Selection::Field &&
                         selection_.entryIndex == child.entryIndex &&
                         selection_.memberIndex == child.memberIndex;
+                    ImGui::PushID((std::to_string(child.entryIndex) + "_f" + std::to_string(child.memberIndex)).c_str());
                     if (ImGui::Selectable(("  " + childDisplay).c_str(), sel))
                     {
                         selection_.type = Selection::Field;
                         selection_.entryIndex = child.entryIndex;
                         selection_.memberIndex = child.memberIndex;
                     }
+                    ImGui::PopID();
                 }
             }
             ImGui::TreePop();
@@ -1967,32 +2074,23 @@ void AppState::renderClassDetails(int entryIndex)
         methodDecompiledEntryIndex_ = -1;
         methodDecompiledMemberIndex_ = -1;
 
-        bool hasCache = false;
-        std::string cachePath;
         std::string cacheDir = api_->getDecompileCacheDir();
         if (!cacheDir.empty())
         {
             // Check under both obfuscated and deobfuscated names
             // (decompileClass stores under deobfuscated; batch decompile stores under obfuscated)
-            std::string obfPath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.obfClass);
-            std::string deobfPath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.deobfClass);
-            if (mcobfF::FileSystem::fileExists(obfPath))
+            auto obfCached = mcobfF::FernflowerDecompiler::readCached(cacheDir, ci.obfClass);
+            if (obfCached && !obfCached->empty())
             {
-                hasCache = true;
-                cachePath = std::move(obfPath);
+                decompiledSource_ = std::move(*obfCached);
             }
-            else if (mcobfF::FileSystem::fileExists(deobfPath))
+            else
             {
-                hasCache = true;
-                cachePath = std::move(deobfPath);
-            }
-        }
-        if (hasCache)
-        {
-            auto content = mcobfF::FileSystem::readFile(cachePath);
-            if (content && !content->empty())
-            {
-                decompiledSource_ = std::move(*content);
+                auto deobfCached = mcobfF::FernflowerDecompiler::readCached(cacheDir, ci.deobfClass);
+                if (deobfCached && !deobfCached->empty())
+                {
+                    decompiledSource_ = std::move(*deobfCached);
+                }
             }
         }
         decompiledEntryIndex_ = entryIndex;
@@ -2092,7 +2190,23 @@ void AppState::renderClassDetails(int entryIndex)
                     }
                 };
                 ImGui::TableNextColumn();
-                CopyableText(m.deobfName.c_str());
+                std::string methodDisplayName = m.deobfName;
+                if (methodDisplayName == "<init>")
+                {
+                    std::string ctorParams;
+                    for (size_t p = 0; p < m.paramTypes.size(); p++)
+                    {
+                        if (p > 0) ctorParams += ", ";
+                        std::string pt = m.paramTypes[p];
+                        size_t ls = pt.rfind('/');
+                        if (ls != std::string::npos) pt = pt.substr(ls + 1);
+                        ls = pt.rfind('.');
+                        if (ls != std::string::npos) pt = pt.substr(ls + 1);
+                        ctorParams += pt;
+                    }
+                    methodDisplayName = "<init>(" + ctorParams + ")";
+                }
+                CopyableText(methodDisplayName.c_str());
                 navToMethod();
                 if (showObfRight)
                 {
@@ -2413,7 +2527,8 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex)
         std::string searchName = !m.deobfName.empty() ? m.deobfName : m.obfName;
         if (searchName.empty()) return std::nullopt;
 
-        auto extracted = mcobfF::JavaMethodParser::extractMethod(fullSource, searchName, m.jvmDescriptor);
+        std::string className = entry.classInfo.deobfClass;
+        auto extracted = mcobfF::JavaMethodParser::extractMethod(fullSource, searchName, m.jvmDescriptor, className);
         if (extracted)
         {
             // Add line numbers to the extracted source
@@ -2485,35 +2600,26 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex)
         {
             // Load from cache and extract (check both obfuscated/deobfuscated names)
             std::string cacheDir = api_->getDecompileCacheDir();
-            std::string cachePath;
+            std::optional<std::string> cachedContent;
             if (!cacheDir.empty())
             {
-                std::string obfPath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.obfClass);
-                std::string deobfPath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.deobfClass);
-                if (mcobfF::FileSystem::fileExists(obfPath))
-                    cachePath = std::move(obfPath);
-                else if (mcobfF::FileSystem::fileExists(deobfPath))
-                    cachePath = std::move(deobfPath);
-            }
-            if (!cachePath.empty())
-            {
-                auto content = mcobfF::FileSystem::readFile(cachePath);
-                if (content && !content->empty())
+                cachedContent = mcobfF::FernflowerDecompiler::readCached(cacheDir, ci.obfClass);
+                if (!cachedContent)
                 {
-                    auto extracted = extractMethodWithParser(*content);
-                    if (extracted)
-                    {
-                        methodDecompiledSource_ = std::move(*extracted);
-                    }
-                    else
-                    {
-                        methodDecompileError_ = "Could not extract method source. Method '" + (
-                            !m.deobfName.empty() ? m.deobfName : m.obfName) + "' not found in decompiled source.";
-                    }
+                    cachedContent = mcobfF::FernflowerDecompiler::readCached(cacheDir, ci.deobfClass);
+                }
+            }
+            if (cachedContent)
+            {
+                auto extracted = extractMethodWithParser(*cachedContent);
+                if (extracted)
+                {
+                    methodDecompiledSource_ = std::move(*extracted);
                 }
                 else
                 {
-                    methodDecompileError_ = "Failed to read cached decompiled source.";
+                    methodDecompileError_ = "Could not extract method source. Method '" + (
+                        !m.deobfName.empty() ? m.deobfName : m.obfName) + "' not found in decompiled source.";
                 }
             }
             else
@@ -2546,7 +2652,7 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex)
                                                             std::nullopt);
 
                                                         auto extracted = mcobfF::JavaMethodParser::extractMethod(
-                                                            *source, searchName, method.jvmDescriptor);
+                                                            *source, searchName, method.jvmDescriptor, e.classInfo.deobfClass);
                                                         if (!extracted) return std::optional<std::string>(std::nullopt);
 
                                                         // Add line numbers
@@ -2594,16 +2700,10 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex)
         ImGui::Text("Decompiling class to extract method source...");
     }
 
-    if (!methodDecompileError_.empty())
+    /*if (!methodDecompileError_.empty())
     {
         ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "%s", methodDecompileError_.c_str());
-        if (ImGui::Button("Show Full Class"))
-        {
-            selection_.type = Selection::Class;
-            selection_.entryIndex = entryIndex;
-            selection_.memberIndex = -1;
-        }
-    }
+    }*/
 
     if (!methodDecompiledSource_.empty())
     {

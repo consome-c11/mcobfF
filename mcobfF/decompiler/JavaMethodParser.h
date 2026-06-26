@@ -21,13 +21,19 @@ namespace mcobfF
         /// Extract complete method source (including @Override and other annotations)
         /// by method name. If jvmDescriptor is provided, it is used to disambiguate
         /// overloaded methods by parameter count.
+        /// For "<init>", className is required to locate the constructor.
+        /// For "<clinit>", the static initializer block is extracted.
         static std::optional<std::string> extractMethod(
             const std::string& source,
             const std::string& methodName,
-            const std::string& jvmDescriptor = "");
+            const std::string& jvmDescriptor = "",
+            const std::string& className = "");
 
-        /// Find all method declarations in the source
-        static std::vector<MethodSpan> findAllMethods(const std::string& source);
+        /// Find all method declarations in the source, including constructors and static initializers.
+        /// className is used to identify constructors (named after the class).
+        static std::vector<MethodSpan> findAllMethods(
+            const std::string& source,
+            const std::string& className = "");
 
     private:
         enum class CharContext
@@ -72,5 +78,18 @@ namespace mcobfF
 
         /// Skip backward over whitespace and comments, return new position
         static size_t skipBackwardWhitespaceAndComments(const std::string& source, size_t pos);
+
+        /// Extract simple class name from fully qualified name (e.g. "net/minecraft/World" -> "World")
+        /// For inner classes like "Outer$Inner", returns "Inner".
+        static std::string getSimpleClassName(const std::string& className);
+
+        /// Extract a constructor by simple class name and descriptor
+        static std::optional<std::string> extractConstructor(
+            const std::string& source,
+            const std::string& simpleName,
+            const std::string& jvmDescriptor);
+
+        /// Extract a static initializer block "static { ... }"
+        static std::optional<std::string> extractStaticInitializer(const std::string& source);
     };
 }

@@ -4,12 +4,14 @@
 #include "mcobfF/network/HttpsClient.h"
 #include "mcobfF/file/FileSystem.h"
 #include "mcobfF/zip/ZipArchive.h"
+#include "mcobfF/obff/OBFFArchive.h"
 
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <functional>
 #include <algorithm>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -104,23 +106,19 @@ namespace mcobfF
         shuttingDown_ = true;
         if (jvm_ && ownsJvm_)
         {
-            jvm_->DestroyJavaVM();
+            // DestroyJavaVM() can block indefinitely waiting for zombie
+            // native threads (GC, JIT, signal handlers) to terminate.
+            // Run it on a detached thread so we don't block the caller.
+            JavaVM* vm = jvm_;
             jvm_ = nullptr;
             env_ = nullptr;
+            std::thread([vm]() {
+                vm->DestroyJavaVM();
+            }).detach();
         }
-#ifdef _WIN32
-        if (jvmDll_)
-        {
-            FreeLibrary(jvmDll_);
-            jvmDll_ = nullptr;
-        }
-#else
-        if (jvmDll_)
-        {
-            dlclose(jvmDll_);
-            jvmDll_ = nullptr;
-        }
-#endif
+        jvmDll_ = nullptr;
+        fnCreateJavaVM_ = nullptr;
+        fnGetCreatedJavaVMs_ = nullptr;
     }
 
     std::string FernflowerDecompiler::findJavaHome()
@@ -630,12 +628,45 @@ namespace mcobfF
     }
 
     std::string FernflowerDecompiler::getCachePath(const std::string& cacheDir,
-                                                   const std::string& className)
+                                                    const std::string& className)
     {
         std::string safeClassName = className;
         std::ranges::replace(safeClassName, '/', '_');
         std::ranges::replace(safeClassName, '.', '_');
         return (fs::path(cacheDir) / (safeClassName + ".java")).string();
+    }
+
+    bool FernflowerDecompiler::hasCache(const std::string& cacheDir,
+                                        const std::string& className)
+    {
+        std::string filePath = getCachePath(cacheDir, className);
+        if (fs::exists(filePath)) return true;
+
+        std::string obffPath = OBFFArchive::getObffPath(cacheDir);
+        if (fs::exists(obffPath))
+        {
+            return OBFFArchive::hasEntry(obffPath, OBFFArchive::getEntryName(className));
+        }
+        return false;
+    }
+
+    std::optional<std::string> FernflowerDecompiler::readCached(const std::string& cacheDir,
+                                                                 const std::string& className)
+    {
+        std::string filePath = getCachePath(cacheDir, className);
+        if (fs::exists(filePath))
+        {
+            auto content = FileSystem::readFile(filePath);
+            if (content && !content->empty()) return content;
+        }
+
+        std::string obffPath = OBFFArchive::getObffPath(cacheDir);
+        if (fs::exists(obffPath))
+        {
+            auto content = OBFFArchive::readEntry(obffPath, OBFFArchive::getEntryName(className));
+            if (content && !content->empty()) return content;
+        }
+        return std::nullopt;
     }
 
     std::optional<std::string> FernflowerDecompiler::decompileClass(const std::string& jarPath,
@@ -650,15 +681,11 @@ namespace mcobfF
             return std::nullopt;
         }
 
-        std::string cachePath = getCachePath(cacheDir, className);
-        if (fs::exists(cachePath))
+        auto cached = readCached(cacheDir, className);
+        if (cached)
         {
-            auto cached = FileSystem::readFile(cachePath);
-            if (cached && !cached->empty())
-            {
-                Logger::info("Fernflower") << "Cache hit: " << cachePath;
-                return cached;
-            }
+            Logger::info("Fernflower") << "Cache hit: " << className;
+            return cached;
         }
 
         JNIEnv* threadEnv = nullptr;
@@ -701,13 +728,14 @@ namespace mcobfF
 
         if (result)
         {
-            fs::create_directories(fs::path(cachePath).parent_path());
-            std::ofstream ofs(cachePath, std::ios::binary);
+            std::string outPath = getCachePath(cacheDir, className);
+            fs::create_directories(fs::path(outPath).parent_path());
+            std::ofstream ofs(outPath, std::ios::binary);
             if (ofs)
             {
                 ofs.write(result->data(), static_cast<std::streamsize>(result->size()));
                 ofs.close();
-                Logger::info("Fernflower") << "Cached decompiled source: " << cachePath;
+                Logger::info("Fernflower") << "Cached decompiled source: " << outPath;
             }
         }
 
@@ -751,8 +779,7 @@ namespace mcobfF
                 if (entry.size() > 6 && entry.substr(entry.size() - 6) == ".class")
                 {
                     std::string className = entry.substr(0, entry.size() - 6);
-                    std::string cachePath = getCachePath(cacheDir, className);
-                    if (!fs::exists(cachePath))
+                    if (!hasCache(cacheDir, className))
                     {
                         classesToDecompile.push_back(className);
                     }

@@ -69,6 +69,8 @@ namespace mcobfF
         bool hasDecompiledCache(const std::string& className) const;
         const std::string& getMappingFilePath() const { return mappingFilePath_; }
 
+        void tryPackObff();
+
     private:
         void generateMappingFile();
         bool downloadJarRemapper();

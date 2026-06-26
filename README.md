@@ -6,15 +6,18 @@ Minecraft Forge, or the Fabric Project.
 The copyright for each piece of mapping data obtained by this tool belongs to the respective projects (Mojang Studios,
 Fabric Project, Forge).
 
-Please do not publish or upload the dumped JSON file online.
-Redistributing official Mojang maps constitutes a breach of the ‘Minecraft’ End User Licence Agreement (EULA).
+Decompiled source code is owned by Mojang Studios and is provided for educational/reference purposes only.
+Redistribution of decompiled source code is strictly prohibited.
+
+Please do not publish or upload the dumped JSON file or decompiled source code online.
+Redistributing official Mojang maps or decompiled code constitutes a breach of the ‘Minecraft’ End User Licence Agreement (EULA).
 Please use this solely for development in a local environment or for personal development purposes.
 
 ## Features
 
 - **Interactive GUI**: Browse mappings in a tree view with live search/filter
-- **Multiple Mapping Formats**: Mojang mappings (TSRG), SRG, and Fabric Intermediary (Tiny)
-- **Auto-Download**: Fetches version manifest, client JARs, and mappings on demand
+- **Multiple Mapping Formats**: Mojang mappings , SRG, and Fabric Intermediary
+- **Auto-Download**: Fetches version manifest, client JARs, mappings, and JRE on demand
 - **Inheritance Resolution**: Enhanced mapping resolution via class hierarchy analysis
 - **Decompilation**: Decompiles classes using Vineflower, with batch decompile support
 - **Mapping Detail Panel**: View deobfuscated, obfuscated, intermediary, and SRG names side by side
@@ -27,18 +30,13 @@ Please use this solely for development in a local environment or for personal de
 - Windows (Win32 API, DirectX 11)
 - C++20 compatible compiler (MSVC)
 - CMake 3.21+
-- **Java Development Kit (JDK) 17+** — required for JNI (JAR remapping & decompilation)
 
 ### Build Steps
 
 ```bash
 mkdir build && cd build
-cmake .. -DJAVA_HOME="C:\Path\To\JDK"
 cmake --build . --config Release
 ```
-
-> **Note**: Decompilation and JAR remapping features require `JAVA_HOME` to be set.
-> Without it, the build proceeds with a warning but the JNI-dependent features are unavailable.
 
 ### Dependencies (auto-fetched via CMake FetchContent)
 
@@ -52,8 +50,9 @@ cmake --build . --config Release
 
 ### Runtime Dependencies
 
-- [Vineflower](https://github.com/Vineflower/vineflower) 1.12.0 — auto-downloaded on first use
-- [MinecraftRemapper](https://github.com/YvanMazy/MinecraftRemapper) 1.1 — auto-downloaded on first use
+- [Vineflower](https://github.com/Vineflower/vineflower) 1.12.0 — auto-downloaded on first use for decompile
+- [jarremapper](https://github.com/consome-c11/jarremapper) 0.0.1 — auto-downloaded on first use for JAR remapping
+- **JRE 17+** — auto-downloaded from Adoptium Temurin if no Java runtime is detected
 
 ## Usage
 
@@ -104,7 +103,7 @@ int main() {
 api.loadMappingsWithInheritance("1.21.1", "path/to/client.jar");
 // This also:
 //   - Builds class hierarchy from the JAR
-//   - Downloads & runs MinecraftRemapper to produce a remapped JAR
+//   - Downloads & runs jarremapper to produce a remapped JAR
 //   - Initializes Vineflower decompiler
 //   - Starts background batch decompilation of all classes
 ```
@@ -160,6 +159,7 @@ auto snapshot = mcobfF::api::getLatestSnapshotVersion();
 | `getDecompileCacheDir()`                           | Get decompile cache directory path                                   |
 | `hasDecompiledCache(className)`                    | Check if a class has been cached after decompilation                 |
 | `getMappingFilePath()`                             | Get path to generated Tiny mapping file                              |
+| `tryPackObff()`                                   | Pack decompiled cache into OBFF archive (called automatically after batch decompile) |
 
 ## Project Structure
 
@@ -179,7 +179,7 @@ mcobfF/
 │   └── ClassInfo.h                # Data structures (ClassInfo, ClassHierarchy)
 ├── config/
 │   └── ApiConfig.h                # API URLs, user agent, download links
-├── decompiler/             # Java decompilation (NEW)
+├── decompiler/             # Java decompilation
 │   ├── FernflowerDecompiler.h/cpp # Vineflower JVM launcher via JNI
 │   └── JavaMethodParser.h/cpp     # Java source method signature extraction
 ├── dumper/
@@ -197,7 +197,10 @@ mcobfF/
 │   └── InheritanceResolver.h/cpp  # Inheritance-based mapping enhancement
 ├── network/                # HTTP client & version discovery
 │   ├── HttpsClient.h/cpp          # WinHTTP-based HTTPS client
+│   ├── JreDownloader.h/cpp        # JRE auto-download & verification
 │   └── VersionDownloader.h/cpp    # Version manifest & JAR downloading
+├── obff/
+│   └── OBFFArchive.h/cpp          # OBFF archive reading (obfuscated file format)
 ├── zip/
 │   └── ZipArchive.h/cpp           # ZIP/JAR archive reading
 ├── Types.h                 # Common type definitions
@@ -208,7 +211,6 @@ mcobfF/
 
 This project uses data and tools from the following projects:
 
-- **MinecraftRemapper** by [YvanMazy](https://github.com/YvanMazy) — JAR remapping via JNI bridge
 - **Vineflower** ([vineflower.org](https://vineflower.org)) — Java decompiler engine
 - **Mojang Mapping Data** — Official obfuscation mappings (TSRG format)
 - **Fabric Intermediary** ([Fabric MC](https://fabricmc.net/)) — Intermediary mappings (Tiny v2)

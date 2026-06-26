@@ -87,6 +87,8 @@ add_executable(${PROJECT_NAME} ${SOURCES} ${IMGUI_SOURCES}
         mcobfF/mapping/TinyMappingParser.cpp
         mcobfF/network/HttpsClient.h
         mcobfF/network/HttpsClient.cpp
+        mcobfF/network/JreDownloader.h
+        mcobfF/network/JreDownloader.cpp
         mcobfF/network/VersionDownloader.h
         mcobfF/network/VersionDownloader.cpp
         mcobfF/zip/ZipArchive.h
@@ -98,6 +100,8 @@ add_executable(${PROJECT_NAME} ${SOURCES} ${IMGUI_SOURCES}
 
         mcobfF/decompiler/JavaMethodParser.h
         mcobfF/decompiler/JavaMethodParser.cpp
+        mcobfF/obff/OBFFArchive.h
+        mcobfF/obff/OBFFArchive.cpp
         gui/config/Settings.h
         gui/config/Settings.cpp)
 

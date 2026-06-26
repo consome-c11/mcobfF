@@ -7,6 +7,7 @@
 #include <windows.h>
 #endif
 #include "mcobfF/config/ApiConfig.h"
+#include "mcobfF/obff/OBFFArchive.h"
 #include "mcobfF/Logger.h"
 #include "mcobfF/class/ClassHierarchyBuilder.h"
 #include "mcobfF/decompiler/FernflowerDecompiler.h"
@@ -235,9 +236,8 @@ namespace mcobfF
     bool api::hasDecompiledCache(const std::string& className) const
     {
         if (cacheDir_.empty() || currentVersion_.empty()) return false;
-        std::string cachePath = FernflowerDecompiler::getCachePath(
-            (fs::path(cacheDir_) / currentVersion_ / "decompiled").string(), className);
-        return fs::exists(cachePath);
+        std::string cacheDir = (fs::path(cacheDir_) / currentVersion_ / "decompiled").string();
+        return FernflowerDecompiler::hasCache(cacheDir, className);
     }
 
     std::string api::getToolsDir() const
@@ -383,6 +383,25 @@ namespace mcobfF
         return true;
     }
 
+    void api::tryPackObff()
+    {
+        std::string cacheDir = getDecompileCacheDir();
+        if (cacheDir.empty()) return;
+
+        std::string obffPath = OBFFArchive::getObffPath(cacheDir);
+        if (fs::exists(obffPath)) return;
+
+        Logger::info("CoreApi") << "Packing decompiled cache into OBFF...";
+        if (OBFFArchive::pack(cacheDir, obffPath))
+        {
+            Logger::info("CoreApi") << "OBFF archive created: " << obffPath;
+        }
+        else
+        {
+            Logger::warn("CoreApi") << "Failed to create OBFF archive.";
+        }
+    }
+
     std::optional<std::string> api::decompileClass(const std::string& className)
     {
         if (currentJarPath_.empty())
@@ -398,21 +417,8 @@ namespace mcobfF
         std::string cacheDir = getDecompileCacheDir();
         if (!cacheDir.empty())
         {
-            std::string cachePath = FernflowerDecompiler::getCachePath(cacheDir, resolvedClassName);
-            if (fs::exists(cachePath))
-            {
-                std::ifstream ifs(cachePath, std::ios::binary);
-                if (ifs)
-                {
-                    std::ostringstream oss;
-                    oss << ifs.rdbuf();
-                    std::string content = oss.str();
-                    if (!content.empty())
-                    {
-                        return content;
-                    }
-                }
-            }
+            auto cached = FernflowerDecompiler::readCached(cacheDir, resolvedClassName);
+            if (cached) return cached;
         }
 
         std::lock_guard<std::mutex> lock(decompileMutex_);
@@ -479,19 +485,17 @@ namespace mcobfF
                                                }
 
                                                auto entries = zip.listEntries();
-                                               for (const auto& entry : entries)
-                                               {
-                                                   if (entry.size() > 6 && entry.substr(entry.size() - 6) == ".class")
-                                                   {
-                                                       std::string cn = entry.substr(0, entry.size() - 6);
-                                                       std::string cp =
-                                                           FernflowerDecompiler::getCachePath(cacheDir, cn);
-                                                       if (!fs::exists(cp))
-                                                       {
-                                                           classNames.push_back(cn);
-                                                       }
-                                                   }
-                                               }
+                                                for (const auto& entry : entries)
+                                                {
+                                                    if (entry.size() > 6 && entry.substr(entry.size() - 6) == ".class")
+                                                    {
+                                                        std::string cn = entry.substr(0, entry.size() - 6);
+                                                        if (!FernflowerDecompiler::hasCache(cacheDir, cn))
+                                                        {
+                                                            classNames.push_back(cn);
+                                                        }
+                                                    }
+                                                }
 
                                                if (classNames.empty())
                                                {
@@ -526,10 +530,13 @@ namespace mcobfF
                                                        total);
                                                }
 
-                                               decompilingAll_ = false;
-                                               decompileProgress_ = 1.0f;
-                                               Logger::info("CoreApi") << "Batch decompile complete.";
-                                               return true;
+                                                Logger::info("CoreApi") << "Batch decompile complete.";
+
+                                                tryPackObff();
+
+                                                decompilingAll_ = false;
+                                                decompileProgress_ = 1.0f;
+                                                return true;
                                            });
     }
 

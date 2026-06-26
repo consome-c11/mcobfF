@@ -59,10 +59,12 @@ public:
     void setHwnd(HWND hwnd);
     void update();
     void renderGui();
+    std::string getConfigPath() const { return configPath_; }
 
 private:
     HWND hwnd_ = nullptr;
     void startFetchManifest();
+    void startJreCheck();
     void startLoadVersion(const std::string& version);
     void buildTree();
     void updateDisplayedVersions();
@@ -92,10 +94,14 @@ private:
     };
 
     std::future<void> manifestFuture_;
+    std::future<bool> jreFuture_;
     std::future<bool> loadFuture_;
 
     bool manifestFetching_ = false;
     bool manifestLoaded_ = false;
+    bool jreChecking_ = false;
+    bool jreReady_ = false;
+    std::string jreError_;
     std::string manifestError_;
     std::vector<VersionEntry> allVersions_;
     char versionFilter_[64] = {};
