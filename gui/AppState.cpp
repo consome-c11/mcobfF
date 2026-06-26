@@ -1967,13 +1967,28 @@ void AppState::renderClassDetails(int entryIndex)
         methodDecompiledEntryIndex_ = -1;
         methodDecompiledMemberIndex_ = -1;
 
-        if (api_&& api_
-        ->
-        hasDecompiledCache(ci.obfClass)
-        )
+        bool hasCache = false;
+        std::string cachePath;
+        std::string cacheDir = api_->getDecompileCacheDir();
+        if (!cacheDir.empty())
         {
-            std::string cacheDir = api_->getDecompileCacheDir();
-            std::string cachePath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.obfClass);
+            // Check under both obfuscated and deobfuscated names
+            // (decompileClass stores under deobfuscated; batch decompile stores under obfuscated)
+            std::string obfPath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.obfClass);
+            std::string deobfPath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.deobfClass);
+            if (mcobfF::FileSystem::fileExists(obfPath))
+            {
+                hasCache = true;
+                cachePath = std::move(obfPath);
+            }
+            else if (mcobfF::FileSystem::fileExists(deobfPath))
+            {
+                hasCache = true;
+                cachePath = std::move(deobfPath);
+            }
+        }
+        if (hasCache)
+        {
             auto content = mcobfF::FileSystem::readFile(cachePath);
             if (content && !content->empty())
             {
@@ -2466,99 +2481,111 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex)
                     !m.deobfName.empty() ? m.deobfName : m.obfName) + "' not found in decompiled source.";
             }
         }
-        else if (api_->hasDecompiledCache(ci.obfClass))
+        else
         {
-            // Load from cache and extract
+            // Load from cache and extract (check both obfuscated/deobfuscated names)
             std::string cacheDir = api_->getDecompileCacheDir();
-            std::string cachePath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.obfClass);
-            auto content = mcobfF::FileSystem::readFile(cachePath);
-            if (content && !content->empty())
+            std::string cachePath;
+            if (!cacheDir.empty())
             {
-                auto extracted = extractMethodWithParser(*content);
-                if (extracted)
+                std::string obfPath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.obfClass);
+                std::string deobfPath = mcobfF::FernflowerDecompiler::getCachePath(cacheDir, ci.deobfClass);
+                if (mcobfF::FileSystem::fileExists(obfPath))
+                    cachePath = std::move(obfPath);
+                else if (mcobfF::FileSystem::fileExists(deobfPath))
+                    cachePath = std::move(deobfPath);
+            }
+            if (!cachePath.empty())
+            {
+                auto content = mcobfF::FileSystem::readFile(cachePath);
+                if (content && !content->empty())
                 {
-                    methodDecompiledSource_ = std::move(*extracted);
+                    auto extracted = extractMethodWithParser(*content);
+                    if (extracted)
+                    {
+                        methodDecompiledSource_ = std::move(*extracted);
+                    }
+                    else
+                    {
+                        methodDecompileError_ = "Could not extract method source. Method '" + (
+                            !m.deobfName.empty() ? m.deobfName : m.obfName) + "' not found in decompiled source.";
+                    }
                 }
                 else
                 {
-                    methodDecompileError_ = "Could not extract method source. Method '" + (
-                        !m.deobfName.empty() ? m.deobfName : m.obfName) + "' not found in decompiled source.";
+                    methodDecompileError_ = "Failed to read cached decompiled source.";
                 }
             }
             else
             {
-                methodDecompileError_ = "Failed to read cached decompiled source.";
-            }
-        }
-        else
-        {
-            // Need to decompile the class first
-            methodDecompiling_ = true;
-            methodDecompileError_.clear();
-            std::string className = ci.obfClass;
-            methodDecompileFuture_ = std::async(std::launch::async,
-                                                [this, className, entryIndex, memberIndex
-                                                ]() -> std::optional<std::string>
-                                                {
-                                                    if (shuttingDown_) return std::nullopt;
-                                                    auto source = api_->decompileAndRemapClass(className);
-                                                    if (!source) return std::optional<std::string>(std::nullopt);
-
-                                                    // Verify indices are still valid (user might have switched versions)
-                                                    const auto& data = api_->getMappingData();
-                                                    if (entryIndex >= (int)data.entries.size()) return std::optional<
-                                                        std::string>(std::nullopt);
-                                                    const auto& e = data.entries[entryIndex];
-                                                    if (memberIndex >= (int)e.methods.size()) return std::optional<
-                                                        std::string>(std::nullopt);
-                                                    const auto& method = e.methods[memberIndex];
-
-                                                    std::string searchName = !method.deobfName.empty()
-                                                                                 ? method.deobfName
-                                                                                 : method.obfName;
-                                                    if (searchName.empty()) return std::optional<std::string>(
-                                                        std::nullopt);
-
-                                                    auto extracted = mcobfF::JavaMethodParser::extractMethod(
-                                                        *source, searchName, method.jvmDescriptor);
-                                                    if (!extracted) return std::optional<std::string>(std::nullopt);
-
-                                                    // Add line numbers
-                                                    std::istringstream stream(*extracted);
-                                                    std::string line;
-                                                    std::vector<std::string> lines;
-                                                    while (std::getline(stream, line))
+                // Need to decompile the class first
+                methodDecompiling_ = true;
+                methodDecompileError_.clear();
+                std::string className = ci.obfClass;
+                methodDecompileFuture_ = std::async(std::launch::async,
+                                                    [this, className, entryIndex, memberIndex
+                                                    ]() -> std::optional<std::string>
                                                     {
-                                                        lines.push_back(line);
-                                                    }
-                                                    if (lines.empty()) return std::optional<std::string>(std::nullopt);
+                                                        if (shuttingDown_) return std::nullopt;
+                                                        auto source = api_->decompileAndRemapClass(className);
+                                                        if (!source) return std::optional<std::string>(std::nullopt);
 
-                                                    int startLine = 1;
-                                                    size_t methodPos = source->find(lines[0]);
-                                                    if (methodPos != std::string::npos)
-                                                    {
-                                                        for (size_t i = 0; i < methodPos; i++)
+                                                        // Verify indices are still valid (user might have switched versions)
+                                                        const auto& data = api_->getMappingData();
+                                                        if (entryIndex >= (int)data.entries.size()) return std::optional<
+                                                            std::string>(std::nullopt);
+                                                        const auto& e = data.entries[entryIndex];
+                                                        if (memberIndex >= (int)e.methods.size()) return std::optional<
+                                                            std::string>(std::nullopt);
+                                                        const auto& method = e.methods[memberIndex];
+
+                                                        std::string searchName = !method.deobfName.empty()
+                                                                                     ? method.deobfName
+                                                                                     : method.obfName;
+                                                        if (searchName.empty()) return std::optional<std::string>(
+                                                            std::nullopt);
+
+                                                        auto extracted = mcobfF::JavaMethodParser::extractMethod(
+                                                            *source, searchName, method.jvmDescriptor);
+                                                        if (!extracted) return std::optional<std::string>(std::nullopt);
+
+                                                        // Add line numbers
+                                                        std::istringstream stream(*extracted);
+                                                        std::string line;
+                                                        std::vector<std::string> lines;
+                                                        while (std::getline(stream, line))
                                                         {
-                                                            if ((*source)[i] == '\n') startLine++;
+                                                            lines.push_back(line);
                                                         }
-                                                    }
+                                                        if (lines.empty()) return std::optional<std::string>(std::nullopt);
 
-                                                    std::ostringstream oss;
-                                                    int maxLineNum = startLine + (int)lines.size() - 1;
-                                                    int lineNumWidth = 1;
-                                                    while (maxLineNum >= 10)
-                                                    {
-                                                        maxLineNum /= 10;
-                                                        lineNumWidth++;
-                                                    }
+                                                        int startLine = 1;
+                                                        size_t methodPos = source->find(lines[0]);
+                                                        if (methodPos != std::string::npos)
+                                                        {
+                                                            for (size_t i = 0; i < methodPos; i++)
+                                                            {
+                                                                if ((*source)[i] == '\n') startLine++;
+                                                            }
+                                                        }
 
-                                                    for (int i = 0; i < (int)lines.size(); i++)
-                                                    {
-                                                        oss << std::setw(lineNumWidth) << std::right << (startLine + i)
-                                                            << " | " << lines[i] << "\n";
-                                                    }
-                                                    return std::optional<std::string>(oss.str());
-                                                });
+                                                        std::ostringstream oss;
+                                                        int maxLineNum = startLine + (int)lines.size() - 1;
+                                                        int lineNumWidth = 1;
+                                                        while (maxLineNum >= 10)
+                                                        {
+                                                            maxLineNum /= 10;
+                                                            lineNumWidth++;
+                                                        }
+
+                                                        for (int i = 0; i < (int)lines.size(); i++)
+                                                        {
+                                                            oss << std::setw(lineNumWidth) << std::right << (startLine + i)
+                                                                << " | " << lines[i] << "\n";
+                                                        }
+                                                        return std::optional<std::string>(oss.str());
+                                                    });
+            }
         }
     }
 
@@ -2580,7 +2607,6 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex)
 
     if (!methodDecompiledSource_.empty())
     {
-        ImGui::TextDisabled("Parsed from decompiled class source (annotations included)");
         if (ImGui::BeginChild("MethodDecompiledSource", ImVec2(0, 300), true))
         {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
@@ -2588,12 +2614,6 @@ void AppState::renderMethodDetails(int entryIndex, int memberIndex)
             ImGui::PopStyleVar();
         }
         ImGui::EndChild();
-        if (ImGui::Button("Show Full Class"))
-        {
-            selection_.type = Selection::Class;
-            selection_.entryIndex = entryIndex;
-            selection_.memberIndex = -1;
-        }
     }
 }
 

@@ -71,7 +71,7 @@ namespace mcobfF
 
     private:
         void generateMappingFile();
-        bool downloadMinecraftRemapper();
+        bool downloadJarRemapper();
         bool remapJar();
         std::string getToolsDir() const;
         std::unique_ptr<MappingResolver> resolver_;
@@ -84,7 +84,7 @@ namespace mcobfF
         std::future<bool> srgFuture_;
         std::future<bool> batchDecompileFuture_;
         std::string mappingFilePath_;
-        std::string minecraftRemapperPath_;
+        std::string jarRemapperPath_;
         std::atomic<bool> decompilingAll_{false};
         std::atomic<bool> cancelled_{false};
         std::atomic<float> decompileProgress_{0.0f};

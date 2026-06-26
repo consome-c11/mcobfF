@@ -259,27 +259,27 @@ namespace mcobfF
 #endif
     }
 
-    bool api::downloadMinecraftRemapper()
+    bool api::downloadJarRemapper()
     {
-        minecraftRemapperPath_ = (fs::path(getToolsDir()) / "MinecraftRemapper-1.1.jar").string();
+        jarRemapperPath_ = (fs::path(getToolsDir()) / "jarremapper.jar").string();
 
-        if (fs::exists(minecraftRemapperPath_))
+        if (fs::exists(jarRemapperPath_))
         {
-            Logger::info("CoreApi") << "MinecraftRemapper already exists: " << minecraftRemapperPath_;
+            Logger::info("CoreApi") << "JarRemapper already exists: " << jarRemapperPath_;
             return true;
         }
 
-        Logger::info("CoreApi") << "Downloading MinecraftRemapper...";
-        fs::create_directories(fs::path(minecraftRemapperPath_).parent_path());
+        Logger::info("CoreApi") << "Downloading JarRemapper...";
+        fs::create_directories(fs::path(jarRemapperPath_).parent_path());
 
-        if (!HttpsClient::downloadToFile(ApiConfig::MINECRAFT_REMAPPER_JAR_URL, minecraftRemapperPath_))
+        if (!HttpsClient::downloadToFile(ApiConfig::JAR_REMAPPER_JAR_URL, jarRemapperPath_))
         {
-            Logger::error("CoreApi") << "Failed to download MinecraftRemapper.";
-            minecraftRemapperPath_.clear();
+            Logger::error("CoreApi") << "Failed to download JarRemapper.";
+            jarRemapperPath_.clear();
             return false;
         }
 
-        Logger::info("CoreApi") << "MinecraftRemapper downloaded: " << minecraftRemapperPath_;
+        Logger::info("CoreApi") << "JarRemapper downloaded: " << jarRemapperPath_;
         return true;
     }
 
@@ -292,47 +292,49 @@ namespace mcobfF
         }
 
         std::string versionDir = resolver_->getCachePath(currentVersion_);
-
-        // MinecraftRemapper output: root = <outputDir>/<version>client/
-        // remapped jar = root/remapped-<version>.jar
-        std::string rootDir = (fs::path(versionDir) / (currentVersion_ + "client")).string();
-        std::string remappedJarPath = (fs::path(rootDir) / ("remapped-" + currentVersion_ + ".jar")).string();
+        std::string remappedJarPath = (fs::path(versionDir) / "client-remapped.jar").string();
 
         if (fs::exists(remappedJarPath))
         {
-            Logger::info("CoreApi") << "Named JAR already exists: " << remappedJarPath;
+            Logger::info("CoreApi") << "Remapped JAR already exists: " << remappedJarPath;
             currentJarPath_ = remappedJarPath;
             return true;
         }
 
         if (!decompiler_ || !decompiler_->isInitialized())
         {
-            Logger::error("CoreApi") << "Decompiler JVM not available for MinecraftRemapper.";
+            Logger::error("CoreApi") << "Decompiler JVM not available for JarRemapper.";
             return false;
         }
 
-        if (!downloadMinecraftRemapper())
+        if (!downloadJarRemapper())
         {
             return false;
         }
 
-        Logger::info("CoreApi") << "Running MinecraftRemapper via JNI...";
+        if (mappingFilePath_.empty())
+        {
+            Logger::error("CoreApi") << "Mapping file not available. Load mappings first.";
+            return false;
+        }
+
+        Logger::info("CoreApi") << "Running JarRemapper via JNI...";
 
         std::vector<std::string> jvmArgs = {
-            "-v", currentVersion_,
-            "-t", "client",
-            "-o", versionDir
+            currentJarPath_,
+            remappedJarPath,
+            mappingFilePath_
         };
 
-        if (!decompiler_->runMainMethod(minecraftRemapperPath_, "be.yvanmazy.minecraftremapper.Main", jvmArgs))
+        if (!decompiler_->runMainMethod(jarRemapperPath_, "com.test.Main", jvmArgs))
         {
-            Logger::error("CoreApi") << "MinecraftRemapper failed.";
+            Logger::error("CoreApi") << "JarRemapper failed.";
             return false;
         }
 
         if (!fs::exists(remappedJarPath))
         {
-            Logger::error("CoreApi") << "MinecraftRemapper did not produce output JAR at: " << remappedJarPath;
+            Logger::error("CoreApi") << "JarRemapper did not produce output JAR at: " << remappedJarPath;
             return false;
         }
 

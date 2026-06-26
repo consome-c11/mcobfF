@@ -27,7 +27,7 @@ namespace mcobfF
         static constexpr const char* DECOMPILER_JAR_URL =
             "https://repo1.maven.org/maven2/org/vineflower/vineflower/1.12.0/vineflower-1.12.0.jar";
 
-        static constexpr const char* MINECRAFT_REMAPPER_JAR_URL =
-            "https://github.com/YvanMazy/MinecraftRemapper/releases/download/1.1/MinecraftRemapper-1.1.jar";
+        static constexpr const char* JAR_REMAPPER_JAR_URL =
+            "https://github.com/consome-c11/jarremapper/releases/download/0.0.1/jarremapper.jar";
     };
 } // namespace mc
